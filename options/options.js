@@ -1,5 +1,16 @@
+const MODEL_OPTIONS = {
+  openai: [
+    { value: 'gpt-5.2', label: 'GPT-5.2' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+  ],
+  anthropic: [
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+  ],
+};
+
 document.addEventListener('DOMContentLoaded', async () => {
   const providerSelect = document.getElementById('api-provider');
+  const modelSelect = document.getElementById('ai-model');
   const apiKeyInput = document.getElementById('api-key');
   const backgroundInput = document.getElementById('user-background');
   const saveBtn = document.getElementById('save-btn');
@@ -8,9 +19,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const hintAnthropic = document.getElementById('hint-anthropic');
 
   // Load saved settings
-  const { apiKey, apiProvider, userBackground } = await chrome.storage.sync.get([
+  const { apiKey, apiProvider, aiModel, userBackground } = await chrome.storage.sync.get([
     'apiKey',
     'apiProvider',
+    'aiModel',
     'userBackground',
   ]);
 
@@ -19,9 +31,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (userBackground) backgroundInput.value = userBackground;
 
   updateHint();
+  populateModels(aiModel);
 
-  // Toggle hints based on provider
-  providerSelect.addEventListener('change', updateHint);
+  // Toggle hints and models based on provider
+  providerSelect.addEventListener('change', () => {
+    updateHint();
+    populateModels();
+  });
 
   function updateHint() {
     if (providerSelect.value === 'openai') {
@@ -33,10 +49,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function populateModels(savedModel) {
+    const models = MODEL_OPTIONS[providerSelect.value] || [];
+    modelSelect.innerHTML = models
+      .map((m) => `<option value="${m.value}">${m.label}</option>`)
+      .join('');
+    if (savedModel && models.some((m) => m.value === savedModel)) {
+      modelSelect.value = savedModel;
+    }
+  }
+
   // Save settings
   saveBtn.addEventListener('click', async () => {
     const key = apiKeyInput.value.trim();
     const provider = providerSelect.value;
+    const model = modelSelect.value;
     const background = backgroundInput.value.trim();
 
     if (!key) {
@@ -47,6 +74,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await chrome.storage.sync.set({
       apiKey: key,
       apiProvider: provider,
+      aiModel: model,
       userBackground: background,
     });
 

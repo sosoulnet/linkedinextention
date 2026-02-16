@@ -162,9 +162,10 @@ function bindPanelEvents(panel) {
     const context = panel.querySelector('#lmh-context').value.trim();
 
     // Get API settings
-    const { apiKey, apiProvider, userBackground } = await chrome.storage.sync.get([
+    const { apiKey, apiProvider, aiModel, userBackground } = await chrome.storage.sync.get([
       'apiKey',
       'apiProvider',
+      'aiModel',
       'userBackground',
     ]);
 
@@ -188,6 +189,7 @@ function bindPanelEvents(panel) {
         context,
         apiKey,
         apiProvider: apiProvider || 'openai',
+        aiModel: aiModel || '',
         userBackground: userBackground || '',
       });
       displayMessagesInPanel(null, messages);
@@ -376,7 +378,7 @@ function extractProfileData() {
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────
-async function generateMessages({ profileData, tones, context, apiKey, apiProvider, userBackground }) {
+async function generateMessages({ profileData, tones, context, apiKey, apiProvider, aiModel, userBackground }) {
   const profileSummary = buildProfileSummary(profileData);
 
   const toneInstructions = tones
@@ -409,10 +411,13 @@ Respond in this exact JSON format only, with no other text:
     ? `${SYSTEM_PROMPT} The sender has provided their background: "${userBackground}". Incorporate this naturally into the messages — the outreach should clearly relate to the sender's role, industry, or goals.`
     : SYSTEM_PROMPT;
 
+  const defaultModel = apiProvider === 'openai' ? 'gpt-5.2' : 'claude-sonnet-4-20250514';
+  const model = aiModel || defaultModel;
+
   if (apiProvider === 'openai') {
-    return callOpenAI(apiKey, userPrompt, systemPrompt);
+    return callOpenAI(apiKey, userPrompt, systemPrompt, model);
   }
-  return callAnthropic(apiKey, userPrompt, systemPrompt);
+  return callAnthropic(apiKey, userPrompt, systemPrompt, model);
 }
 
 function buildProfileSummary(profile) {
@@ -445,7 +450,7 @@ function buildProfileSummary(profile) {
   return summary || 'No profile data available.';
 }
 
-async function callOpenAI(apiKey, userPrompt, systemPrompt) {
+async function callOpenAI(apiKey, userPrompt, systemPrompt, model) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -453,7 +458,7 @@ async function callOpenAI(apiKey, userPrompt, systemPrompt) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
@@ -473,7 +478,7 @@ async function callOpenAI(apiKey, userPrompt, systemPrompt) {
   return parseMessagesJSON(content);
 }
 
-async function callAnthropic(apiKey, userPrompt, systemPrompt) {
+async function callAnthropic(apiKey, userPrompt, systemPrompt, model) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -483,7 +488,7 @@ async function callAnthropic(apiKey, userPrompt, systemPrompt) {
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model,
       max_tokens: 1024,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],

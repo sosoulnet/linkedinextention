@@ -13,22 +13,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   const modelSelect = document.getElementById('ai-model');
   const apiKeyInput = document.getElementById('api-key');
   const backgroundInput = document.getElementById('user-background');
+  const languageSelect = document.getElementById('default-language');
   const saveBtn = document.getElementById('save-btn');
   const statusEl = document.getElementById('status');
   const hintOpenAI = document.getElementById('hint-openai');
   const hintAnthropic = document.getElementById('hint-anthropic');
 
   // Load saved settings
-  const { apiKey, apiProvider, aiModel, userBackground } = await chrome.storage.sync.get([
+  const { apiKey, apiProvider, aiModel, userBackground, defaultLanguage } = await chrome.storage.sync.get([
     'apiKey',
     'apiProvider',
     'aiModel',
     'userBackground',
+    'defaultLanguage',
   ]);
 
   if (apiProvider) providerSelect.value = apiProvider;
   if (apiKey) apiKeyInput.value = apiKey;
   if (userBackground) backgroundInput.value = userBackground;
+  if (defaultLanguage) languageSelect.value = defaultLanguage;
 
   updateHint();
   populateModels(aiModel);
@@ -65,6 +68,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const provider = providerSelect.value;
     const model = modelSelect.value;
     const background = backgroundInput.value.trim();
+    const language = languageSelect.value;
 
     if (!key) {
       showStatus('Please enter an API key.', 'error');
@@ -76,6 +80,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       apiProvider: provider,
       aiModel: model,
       userBackground: background,
+      defaultLanguage: language,
     });
 
     showStatus('Settings saved successfully!', 'success');

@@ -78,6 +78,12 @@ function openPanel() {
   // Add the opened class to FAB for visual feedback
   document.getElementById('lmh-fab').classList.add('lmh-fab-active');
 
+  // Load default language from settings
+  chrome.storage.sync.get(['defaultLanguage'], ({ defaultLanguage }) => {
+    const langSelect = panel.querySelector('#lmh-language');
+    if (langSelect && defaultLanguage) langSelect.value = defaultLanguage;
+  });
+
   // Bind panel events
   bindPanelEvents(panel);
 
@@ -128,6 +134,14 @@ function buildPanelHTML(profile) {
       </div>
 
       <div class="lmh-section">
+        <div class="lmh-section-label">Language</div>
+        <select id="lmh-language" class="lmh-select">
+          <option value="english">English</option>
+          <option value="hebrew">Hebrew</option>
+        </select>
+      </div>
+
+      <div class="lmh-section">
         <div class="lmh-section-label">Context <span class="lmh-optional">(optional)</span></div>
         <textarea id="lmh-context" class="lmh-textarea" placeholder="e.g. 'I want to discuss a job opportunity' or 'We met at a conference'..." rows="2"></textarea>
       </div>
@@ -160,6 +174,7 @@ function bindPanelEvents(panel) {
     }
 
     const context = panel.querySelector('#lmh-context').value.trim();
+    const language = panel.querySelector('#lmh-language').value;
 
     // Get API settings
     const { apiKey, apiProvider, aiModel, userBackground } = await chrome.storage.sync.get([
@@ -191,6 +206,7 @@ function bindPanelEvents(panel) {
         apiProvider: apiProvider || 'openai',
         aiModel: aiModel || '',
         userBackground: userBackground || '',
+        language: language || 'english',
       });
       displayMessagesInPanel(null, messages);
     } catch (err) {
@@ -378,7 +394,7 @@ function extractProfileData() {
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────
-async function generateMessages({ profileData, tones, context, apiKey, apiProvider, aiModel, userBackground }) {
+async function generateMessages({ profileData, tones, context, apiKey, apiProvider, aiModel, userBackground, language }) {
   const profileSummary = buildProfileSummary(profileData);
 
   const toneInstructions = tones
@@ -402,7 +418,7 @@ Requirements:
 - Incorporate specific details from their profile where relevant to make messages feel personal${userBackground ? '\n- Naturally tie in my background — the message should make it clear why I\'m reaching out based on who I am and what I do' : ''}
 - Messages should motivate the recipient to respond
 - Keep messages natural — avoid sounding like a template or bot
-- Do not use generic flattery
+- Do not use generic flattery${language && language !== 'english' ? `\n- IMPORTANT: Write all message texts in ${language}` : ''}
 
 Respond in this exact JSON format only, with no other text:
 [{"tone": "tone_name", "text": "message text"}, ...]`;

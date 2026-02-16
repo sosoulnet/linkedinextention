@@ -464,7 +464,7 @@ async function callOpenAI(apiKey, userPrompt, systemPrompt, model) {
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.8,
-      max_tokens: 1024,
+      max_completion_tokens: 1024,
     }),
   });
 

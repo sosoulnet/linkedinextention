@@ -164,9 +164,10 @@ function bindPanelEvents(panel) {
     const context = panel.querySelector('#lmh-context').value.trim();
 
     // Get API settings
-    const { apiKey, apiProvider } = await chrome.storage.sync.get([
+    const { apiKey, apiProvider, userBackground } = await chrome.storage.sync.get([
       'apiKey',
       'apiProvider',
+      'userBackground',
     ]);
 
     if (!apiKey) {
@@ -191,6 +192,7 @@ function bindPanelEvents(panel) {
         context,
         apiKey,
         apiProvider: apiProvider || 'openai',
+        userBackground: userBackground || '',
       });
       displayMessagesInPanel(resultsEl, messages);
     } catch (err) {
@@ -339,24 +341,28 @@ function extractProfileData() {
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────
-async function generateMessages({ profileData, tones, context, apiKey, apiProvider }) {
+async function generateMessages({ profileData, tones, context, apiKey, apiProvider, userBackground }) {
   const profileSummary = buildProfileSummary(profileData);
 
   const toneInstructions = tones
     .map((t) => `- ${TONE_DESCRIPTIONS[t] || t}`)
     .join('\n');
 
+  const backgroundBlock = userBackground
+    ? `\nAbout me (the sender):\n${userBackground}\n`
+    : '';
+
   const userPrompt = `Here is the LinkedIn profile of the person I want to message:
 
 ${profileSummary}
-
+${backgroundBlock}
 ${context ? `Additional context: ${context}\n` : ''}
 Please generate exactly ${tones.length} message option(s), one for each of these tones:
 ${toneInstructions}
 
 Requirements:
 - Each message should be concise (2-4 sentences max)
-- Incorporate specific details from their profile where relevant to make messages feel personal
+- Incorporate specific details from their profile where relevant to make messages feel personal${userBackground ? '\n- Naturally tie in my background — the message should make it clear why I\'m reaching out based on who I am and what I do' : ''}
 - Messages should motivate the recipient to respond
 - Keep messages natural — avoid sounding like a template or bot
 - Do not use generic flattery
@@ -364,10 +370,14 @@ Requirements:
 Respond in this exact JSON format only, with no other text:
 [{"tone": "tone_name", "text": "message text"}, ...]`;
 
+  const systemPrompt = userBackground
+    ? `${SYSTEM_PROMPT} The sender has provided their background: "${userBackground}". Incorporate this naturally into the messages — the outreach should clearly relate to the sender's role, industry, or goals.`
+    : SYSTEM_PROMPT;
+
   if (apiProvider === 'openai') {
-    return callOpenAI(apiKey, userPrompt);
+    return callOpenAI(apiKey, userPrompt, systemPrompt);
   }
-  return callAnthropic(apiKey, userPrompt);
+  return callAnthropic(apiKey, userPrompt, systemPrompt);
 }
 
 function buildProfileSummary(profile) {
@@ -400,7 +410,7 @@ function buildProfileSummary(profile) {
   return summary || 'No profile data available.';
 }
 
-async function callOpenAI(apiKey, userPrompt) {
+async function callOpenAI(apiKey, userPrompt, systemPrompt) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -410,7 +420,7 @@ async function callOpenAI(apiKey, userPrompt) {
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.8,
@@ -428,7 +438,7 @@ async function callOpenAI(apiKey, userPrompt) {
   return parseMessagesJSON(content);
 }
 
-async function callAnthropic(apiKey, userPrompt) {
+async function callAnthropic(apiKey, userPrompt, systemPrompt) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -440,7 +450,7 @@ async function callAnthropic(apiKey, userPrompt) {
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
       temperature: 0.8,
     }),

@@ -46,7 +46,8 @@ header p {
 }
 
 .form-group select,
-.form-group input {
+.form-group input,
+.form-group textarea {
   width: 100%;
   padding: 10px 12px;
   border: 1.5px solid #e0dfdc;
@@ -56,10 +57,12 @@ header p {
   background: white;
   outline: none;
   transition: border-color 0.2s;
+  resize: vertical;
 }
 
 .form-group select:focus,
-.form-group input:focus {
+.form-group input:focus,
+.form-group textarea:focus {
   border-color: #0a66c2;
 }
 

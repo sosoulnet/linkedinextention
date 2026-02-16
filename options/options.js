@@ -1,19 +1,22 @@
 document.addEventListener('DOMContentLoaded', async () => {
   const providerSelect = document.getElementById('api-provider');
   const apiKeyInput = document.getElementById('api-key');
+  const backgroundInput = document.getElementById('user-background');
   const saveBtn = document.getElementById('save-btn');
   const statusEl = document.getElementById('status');
   const hintOpenAI = document.getElementById('hint-openai');
   const hintAnthropic = document.getElementById('hint-anthropic');
 
   // Load saved settings
-  const { apiKey, apiProvider } = await chrome.storage.sync.get([
+  const { apiKey, apiProvider, userBackground } = await chrome.storage.sync.get([
     'apiKey',
     'apiProvider',
+    'userBackground',
   ]);
 
   if (apiProvider) providerSelect.value = apiProvider;
   if (apiKey) apiKeyInput.value = apiKey;
+  if (userBackground) backgroundInput.value = userBackground;
 
   updateHint();
 
@@ -34,6 +37,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   saveBtn.addEventListener('click', async () => {
     const key = apiKeyInput.value.trim();
     const provider = providerSelect.value;
+    const background = backgroundInput.value.trim();
 
     if (!key) {
       showStatus('Please enter an API key.', 'error');
@@ -43,6 +47,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await chrome.storage.sync.set({
       apiKey: key,
       apiProvider: provider,
+      userBackground: background,
     });
 
     showStatus('Settings saved successfully!', 'success');

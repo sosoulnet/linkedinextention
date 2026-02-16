@@ -78,7 +78,8 @@ header h1 {
 }
 
 .form-group select,
-.form-group input {
+.form-group input,
+.form-group textarea {
   width: 100%;
   padding: 9px 10px;
   border: 1.5px solid #e0dfdc;
@@ -88,10 +89,12 @@ header h1 {
   background: white;
   outline: none;
   transition: border-color 0.2s;
+  resize: vertical;
 }
 
 .form-group select:focus,
-.form-group input:focus {
+.form-group input:focus,
+.form-group textarea:focus {
   border-color: #0a66c2;
 }
 

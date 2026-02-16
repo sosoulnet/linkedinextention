@@ -1,4 +1,37 @@
-// Listen for messages from the popup to insert text into LinkedIn chat
+// ── Constants ──────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are an expert LinkedIn marketer and you now help to create a few options of messages to send to the current user. The messages should sound natural and motivate the users to respond.`;
+
+const TONE_OPTIONS = [
+  { value: 'friendly', label: 'Friendly' },
+  { value: 'professional', label: 'Professional' },
+  { value: 'question', label: 'Question' },
+  { value: 'complimentary', label: 'Complimentary' },
+  { value: 'networking', label: 'Networking' },
+  { value: 'collaboration', label: 'Collaboration' },
+];
+
+const TONE_DESCRIPTIONS = {
+  friendly: 'Friendly and warm - casual, approachable, like reaching out to a friend',
+  professional:
+    'Professional and formal - business-oriented, polished, respectful of their time',
+  question:
+    'Asking an engaging question - curiosity-driven, opens dialogue by asking something relevant',
+  complimentary:
+    "Complimentary - genuinely praises their work or achievements, not over-the-top",
+  networking:
+    'Networking-focused - building mutual connections, finding common ground',
+  collaboration:
+    'Collaboration-oriented - proposing to work together on something specific',
+};
+
+// ── State ──────────────────────────────────────────────────────────
+let panelOpen = false;
+let profileData = null;
+
+// ── Inject UI on load ──────────────────────────────────────────────
+createFloatingButton();
+
+// ── Listen for messages from popup (still support insert) ──────────
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === 'insertMessage') {
     insertMessage(message.text);
@@ -7,8 +40,441 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// ── Floating Action Button ─────────────────────────────────────────
+function createFloatingButton() {
+  const fab = document.createElement('div');
+  fab.id = 'lmh-fab';
+  fab.title = 'Generate LinkedIn message suggestions';
+  fab.innerHTML = `
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M20 2H4C2.9 2 2 2.9 2 4V22L6 18H20C21.1 18 22 17.1 22 16V4C22 2.9 21.1 2 20 2Z" fill="white"/>
+      <path d="M9 11H7V9H9V11ZM13 11H11V9H13V11ZM17 11H15V9H17V11Z" fill="#0a66c2"/>
+    </svg>
+  `;
+  fab.addEventListener('click', togglePanel);
+  document.body.appendChild(fab);
+}
+
+// ── Panel ──────────────────────────────────────────────────────────
+function togglePanel() {
+  if (panelOpen) {
+    closePanel();
+  } else {
+    openPanel();
+  }
+}
+
+function openPanel() {
+  // Extract profile data from page
+  profileData = extractProfileData();
+
+  const panel = document.createElement('div');
+  panel.id = 'lmh-panel';
+  panel.innerHTML = buildPanelHTML(profileData);
+
+  document.body.appendChild(panel);
+  panelOpen = true;
+
+  // Add the opened class to FAB for visual feedback
+  document.getElementById('lmh-fab').classList.add('lmh-fab-active');
+
+  // Bind panel events
+  bindPanelEvents(panel);
+
+  // Animate in
+  requestAnimationFrame(() => panel.classList.add('lmh-panel-visible'));
+}
+
+function closePanel() {
+  const panel = document.getElementById('lmh-panel');
+  if (panel) {
+    panel.classList.remove('lmh-panel-visible');
+    panel.addEventListener('transitionend', () => panel.remove(), { once: true });
+    // Fallback removal if transition doesn't fire
+    setTimeout(() => panel.remove(), 350);
+  }
+  panelOpen = false;
+  document.getElementById('lmh-fab')?.classList.remove('lmh-fab-active');
+}
+
+function buildPanelHTML(profile) {
+  const toneCheckboxes = TONE_OPTIONS.map(
+    (t) => `
+    <label class="lmh-tone-option">
+      <input type="checkbox" name="lmh-tone" value="${t.value}" ${t.value === 'friendly' ? 'checked' : ''}>
+      <span class="lmh-tone-label">${t.label}</span>
+    </label>`
+  ).join('');
+
+  return `
+    <div class="lmh-panel-header">
+      <span class="lmh-panel-title">Message Helper</span>
+      <button class="lmh-close-btn" id="lmh-close-btn">&times;</button>
+    </div>
+
+    <div class="lmh-panel-body">
+      <div class="lmh-section">
+        <div class="lmh-section-label">Profile</div>
+        <div class="lmh-profile-card">
+          <div class="lmh-profile-name">${escapeHTML(profile.name || 'Unknown')}</div>
+          <div class="lmh-profile-headline">${escapeHTML(profile.headline || '')}</div>
+          <div class="lmh-profile-location">${escapeHTML(profile.location || '')}</div>
+        </div>
+      </div>
+
+      <div class="lmh-section">
+        <div class="lmh-section-label">Tone</div>
+        <div class="lmh-tone-grid">${toneCheckboxes}</div>
+      </div>
+
+      <div class="lmh-section">
+        <div class="lmh-section-label">Context <span class="lmh-optional">(optional)</span></div>
+        <textarea id="lmh-context" class="lmh-textarea" placeholder="e.g. 'I want to discuss a job opportunity' or 'We met at a conference'..." rows="2"></textarea>
+      </div>
+
+      <button id="lmh-generate-btn" class="lmh-generate-btn">Generate Messages</button>
+
+      <div id="lmh-loading" class="lmh-loading lmh-hidden">
+        <div class="lmh-spinner"></div>
+        <span>Generating...</span>
+      </div>
+
+      <div id="lmh-error" class="lmh-error lmh-hidden">
+        <span id="lmh-error-msg"></span>
+      </div>
+
+      <div id="lmh-results" class="lmh-results lmh-hidden"></div>
+    </div>
+  `;
+}
+
+function bindPanelEvents(panel) {
+  panel.querySelector('#lmh-close-btn').addEventListener('click', closePanel);
+
+  panel.querySelector('#lmh-generate-btn').addEventListener('click', async () => {
+    const selectedTones = Array.from(
+      panel.querySelectorAll('input[name="lmh-tone"]:checked')
+    ).map((el) => el.value);
+
+    if (selectedTones.length === 0) {
+      showPanelError('Please select at least one tone.');
+      return;
+    }
+
+    const context = panel.querySelector('#lmh-context').value.trim();
+
+    // Get API settings
+    const { apiKey, apiProvider } = await chrome.storage.sync.get([
+      'apiKey',
+      'apiProvider',
+    ]);
+
+    if (!apiKey) {
+      showPanelError('API key not configured. Click the extension toolbar icon to set it up.');
+      return;
+    }
+
+    const generateBtn = panel.querySelector('#lmh-generate-btn');
+    const loadingEl = panel.querySelector('#lmh-loading');
+    const resultsEl = panel.querySelector('#lmh-results');
+    const errorEl = panel.querySelector('#lmh-error');
+
+    generateBtn.disabled = true;
+    loadingEl.classList.remove('lmh-hidden');
+    resultsEl.classList.add('lmh-hidden');
+    errorEl.classList.add('lmh-hidden');
+
+    try {
+      const messages = await generateMessages({
+        profileData,
+        tones: selectedTones,
+        context,
+        apiKey,
+        apiProvider: apiProvider || 'openai',
+      });
+      displayMessagesInPanel(resultsEl, messages);
+    } catch (err) {
+      showPanelError(err.message || 'Failed to generate messages.');
+    } finally {
+      generateBtn.disabled = false;
+      loadingEl.classList.add('lmh-hidden');
+    }
+  });
+}
+
+function showPanelError(msg) {
+  const errorEl = document.getElementById('lmh-error');
+  const errorMsg = document.getElementById('lmh-error-msg');
+  if (errorEl && errorMsg) {
+    errorMsg.textContent = msg;
+    errorEl.classList.remove('lmh-hidden');
+  }
+}
+
+function displayMessagesInPanel(container, messages) {
+  container.innerHTML = '';
+  container.classList.remove('lmh-hidden');
+
+  messages.forEach((msg) => {
+    const card = document.createElement('div');
+    card.className = 'lmh-message-card';
+
+    const tag = document.createElement('span');
+    tag.className = 'lmh-message-tag';
+    tag.textContent = msg.tone;
+
+    const text = document.createElement('div');
+    text.className = 'lmh-message-text';
+    text.textContent = msg.text;
+
+    const actions = document.createElement('div');
+    actions.className = 'lmh-message-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'lmh-copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(msg.text);
+      copyBtn.textContent = 'Copied!';
+      copyBtn.classList.add('lmh-copied');
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy';
+        copyBtn.classList.remove('lmh-copied');
+      }, 2000);
+    });
+
+    const useBtn = document.createElement('button');
+    useBtn.className = 'lmh-use-btn';
+    useBtn.textContent = 'Insert in Chat';
+    useBtn.addEventListener('click', () => {
+      insertMessage(msg.text);
+    });
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(useBtn);
+    card.appendChild(tag);
+    card.appendChild(text);
+    card.appendChild(actions);
+    container.appendChild(card);
+  });
+}
+
+// ── Profile extraction ─────────────────────────────────────────────
+function extractProfileData() {
+  const name =
+    document.querySelector('.text-heading-xlarge')?.textContent?.trim() ||
+    document.querySelector('h1')?.textContent?.trim() ||
+    '';
+
+  const headline =
+    document.querySelector('.text-body-medium.break-words')?.textContent?.trim() ||
+    document.querySelector('[data-generated-suggestion-target]')?.textContent?.trim() ||
+    '';
+
+  const location =
+    document.querySelector('.text-body-small.inline.t-black--light.break-words')
+      ?.textContent?.trim() || '';
+
+  const about =
+    document.querySelector('#about ~ .display-flex .inline-show-more-text')
+      ?.textContent?.trim() ||
+    document
+      .querySelector(
+        '[data-generated-suggestion-target="urn:li:fsu_profileActionDelegate"]'
+      )
+      ?.textContent?.trim() ||
+    '';
+
+  const experienceItems = [];
+  const expSection = document.getElementById('experience');
+  if (expSection) {
+    const expContainer = expSection.closest('section');
+    if (expContainer) {
+      expContainer.querySelectorAll('.artdeco-list__item').forEach((item) => {
+        const title =
+          item.querySelector('.mr1.t-bold span[aria-hidden="true"]')?.textContent?.trim() || '';
+        const company =
+          item.querySelector('.t-14.t-normal span[aria-hidden="true"]')?.textContent?.trim() || '';
+        if (title || company) experienceItems.push({ title, company });
+      });
+    }
+  }
+
+  const educationItems = [];
+  const eduSection = document.getElementById('education');
+  if (eduSection) {
+    const eduContainer = eduSection.closest('section');
+    if (eduContainer) {
+      eduContainer.querySelectorAll('.artdeco-list__item').forEach((item) => {
+        const school =
+          item.querySelector('.mr1.hoverable-link-text.t-bold span[aria-hidden="true"]')?.textContent?.trim() || '';
+        const degree =
+          item.querySelector('.t-14.t-normal span[aria-hidden="true"]')?.textContent?.trim() || '';
+        if (school) educationItems.push({ school, degree });
+      });
+    }
+  }
+
+  const skills = [];
+  const skillSection = document.getElementById('skills');
+  if (skillSection) {
+    const skillContainer = skillSection.closest('section');
+    if (skillContainer) {
+      skillContainer.querySelectorAll('.mr1.t-bold span[aria-hidden="true"]').forEach((item) => {
+        const skill = item.textContent?.trim();
+        if (skill) skills.push(skill);
+      });
+    }
+  }
+
+  return {
+    name,
+    headline,
+    location,
+    about,
+    experience: experienceItems.slice(0, 3),
+    education: educationItems.slice(0, 2),
+    skills: skills.slice(0, 10),
+  };
+}
+
+// ── Message generation (AI calls) ──────────────────────────────────
+async function generateMessages({ profileData, tones, context, apiKey, apiProvider }) {
+  const profileSummary = buildProfileSummary(profileData);
+
+  const toneInstructions = tones
+    .map((t) => `- ${TONE_DESCRIPTIONS[t] || t}`)
+    .join('\n');
+
+  const userPrompt = `Here is the LinkedIn profile of the person I want to message:
+
+${profileSummary}
+
+${context ? `Additional context: ${context}\n` : ''}
+Please generate exactly ${tones.length} message option(s), one for each of these tones:
+${toneInstructions}
+
+Requirements:
+- Each message should be concise (2-4 sentences max)
+- Incorporate specific details from their profile where relevant to make messages feel personal
+- Messages should motivate the recipient to respond
+- Keep messages natural — avoid sounding like a template or bot
+- Do not use generic flattery
+
+Respond in this exact JSON format only, with no other text:
+[{"tone": "tone_name", "text": "message text"}, ...]`;
+
+  if (apiProvider === 'openai') {
+    return callOpenAI(apiKey, userPrompt);
+  }
+  return callAnthropic(apiKey, userPrompt);
+}
+
+function buildProfileSummary(profile) {
+  if (!profile) return 'No profile data available.';
+
+  let summary = '';
+  if (profile.name) summary += `Name: ${profile.name}\n`;
+  if (profile.headline) summary += `Headline: ${profile.headline}\n`;
+  if (profile.location) summary += `Location: ${profile.location}\n`;
+  if (profile.about) summary += `About: ${profile.about}\n`;
+
+  if (profile.experience?.length > 0) {
+    summary += `\nRecent Experience:\n`;
+    profile.experience.forEach((exp) => {
+      summary += `- ${exp.title}${exp.company ? ` at ${exp.company}` : ''}\n`;
+    });
+  }
+
+  if (profile.education?.length > 0) {
+    summary += `\nEducation:\n`;
+    profile.education.forEach((edu) => {
+      summary += `- ${edu.school}${edu.degree ? ` (${edu.degree})` : ''}\n`;
+    });
+  }
+
+  if (profile.skills?.length > 0) {
+    summary += `\nKey Skills: ${profile.skills.join(', ')}\n`;
+  }
+
+  return summary || 'No profile data available.';
+}
+
+async function callOpenAI(apiKey, userPrompt) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.8,
+      max_tokens: 1024,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `OpenAI API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || '';
+  return parseMessagesJSON(content);
+}
+
+async function callAnthropic(apiKey, userPrompt) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userPrompt }],
+      temperature: 0.8,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Anthropic API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const content = data.content?.[0]?.text || '';
+  return parseMessagesJSON(content);
+}
+
+function parseMessagesJSON(content) {
+  const jsonMatch = content.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) {
+    throw new Error('Failed to parse AI response. Please try again.');
+  }
+
+  const messages = JSON.parse(jsonMatch[0]);
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error('No messages generated. Please try again.');
+  }
+
+  return messages.map((m) => ({
+    tone: m.tone || 'unknown',
+    text: m.text || '',
+  }));
+}
+
+// ── Message insertion ──────────────────────────────────────────────
 function insertMessage(text) {
-  // Try the messaging compose area
   const messageInput = document.querySelector(
     '.msg-form__contenteditable[contenteditable="true"]'
   );
@@ -17,7 +483,6 @@ function insertMessage(text) {
     return;
   }
 
-  // Try generic contenteditable in messaging overlay
   const composeInput = document.querySelector(
     '.msg-overlay-conversation-bubble .msg-form__contenteditable'
   );
@@ -26,7 +491,6 @@ function insertMessage(text) {
     return;
   }
 
-  // Fallback: any visible contenteditable textbox
   const fallbackInput = document.querySelector(
     '[role="textbox"][contenteditable="true"]'
   );
@@ -35,7 +499,6 @@ function insertMessage(text) {
     return;
   }
 
-  // Last resort: copy to clipboard and notify
   navigator.clipboard.writeText(text).then(() => {
     showNotification('Message copied to clipboard! Paste it in the chat.');
   });
@@ -43,44 +506,31 @@ function insertMessage(text) {
 
 function setContentEditableText(element, text) {
   element.focus();
-
-  // Clear existing content
   element.innerHTML = '';
-
-  // Create a paragraph with the text (LinkedIn uses <p> tags)
   const p = document.createElement('p');
   p.textContent = text;
   element.appendChild(p);
-
-  // Dispatch events to trigger LinkedIn's internal handlers
   element.dispatchEvent(new Event('input', { bubbles: true }));
   element.dispatchEvent(new Event('change', { bubbles: true }));
-
   showNotification('Message inserted!');
 }
 
+// ── Notification toast ─────────────────────────────────────────────
 function showNotification(text) {
   const notification = document.createElement('div');
+  notification.className = 'lmh-notification';
   notification.textContent = text;
-  Object.assign(notification.style, {
-    position: 'fixed',
-    bottom: '20px',
-    right: '20px',
-    background: '#057642',
-    color: 'white',
-    padding: '12px 20px',
-    borderRadius: '8px',
-    fontSize: '14px',
-    fontWeight: '500',
-    zIndex: '10000',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-    transition: 'opacity 0.3s ease',
-  });
-
   document.body.appendChild(notification);
 
   setTimeout(() => {
     notification.style.opacity = '0';
     setTimeout(() => notification.remove(), 300);
   }, 2500);
+}
+
+// ── Utility ────────────────────────────────────────────────────────
+function escapeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }

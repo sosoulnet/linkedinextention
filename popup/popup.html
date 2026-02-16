@@ -3,81 +3,43 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LinkedIn Message Helper</title>
+  <title>LinkedIn Message Helper - Setup</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="container">
     <header>
       <h1>LinkedIn Message Helper</h1>
-      <p class="subtitle">Generate personalized messages</p>
+      <p class="subtitle">Setup &amp; Configuration</p>
     </header>
 
-    <div id="not-linkedin" class="notice hidden">
-      <p>Navigate to a LinkedIn profile to use this extension.</p>
+    <div id="status-banner" class="status-banner hidden">
+      <span id="status-icon" class="status-icon"></span>
+      <span id="status-text"></span>
     </div>
 
-    <div id="main-content">
-      <div id="profile-section" class="section">
-        <h2>Profile Detected</h2>
-        <div id="profile-info" class="profile-card">
-          <div class="profile-name" id="profile-name">Loading...</div>
-          <div class="profile-headline" id="profile-headline"></div>
-          <div class="profile-location" id="profile-location"></div>
-        </div>
-      </div>
+    <div class="form-group">
+      <label for="api-provider">AI Provider</label>
+      <select id="api-provider">
+        <option value="openai">OpenAI (GPT-4o-mini)</option>
+        <option value="anthropic">Anthropic (Claude)</option>
+      </select>
+    </div>
 
-      <div class="section">
-        <h2>Message Tone</h2>
-        <div class="tone-grid">
-          <label class="tone-option">
-            <input type="checkbox" name="tone" value="friendly" checked>
-            <span class="tone-label">Friendly</span>
-          </label>
-          <label class="tone-option">
-            <input type="checkbox" name="tone" value="professional">
-            <span class="tone-label">Professional</span>
-          </label>
-          <label class="tone-option">
-            <input type="checkbox" name="tone" value="question">
-            <span class="tone-label">Question</span>
-          </label>
-          <label class="tone-option">
-            <input type="checkbox" name="tone" value="complimentary">
-            <span class="tone-label">Complimentary</span>
-          </label>
-          <label class="tone-option">
-            <input type="checkbox" name="tone" value="networking">
-            <span class="tone-label">Networking</span>
-          </label>
-          <label class="tone-option">
-            <input type="checkbox" name="tone" value="collaboration">
-            <span class="tone-label">Collaboration</span>
-          </label>
-        </div>
-      </div>
+    <div class="form-group">
+      <label for="api-key">API Key</label>
+      <input type="password" id="api-key" placeholder="Enter your API key...">
+      <p class="hint" id="hint-openai">Get your key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Dashboard</a></p>
+      <p class="hint hidden" id="hint-anthropic">Get your key from <a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic Console</a></p>
+    </div>
 
-      <div class="section">
-        <h2>Context <span class="optional">(optional)</span></h2>
-        <textarea id="context-input" placeholder="Add any context, e.g., 'I want to discuss a job opportunity' or 'We met at a conference'..." rows="3"></textarea>
-      </div>
+    <button id="save-btn" class="save-btn">Save Settings</button>
 
-      <button id="generate-btn" class="generate-btn">Generate Messages</button>
+    <div id="save-status" class="save-status hidden"></div>
 
-      <div id="loading" class="loading hidden">
-        <div class="spinner"></div>
-        <p>Crafting personalized messages...</p>
-      </div>
-
-      <div id="results" class="section hidden">
-        <h2>Generated Messages</h2>
-        <div id="messages-container"></div>
-      </div>
-
-      <div id="error" class="error hidden">
-        <p id="error-message"></p>
-        <button id="settings-link" class="link-btn">Open Settings</button>
-      </div>
+    <div class="info-box">
+      <h2>How to use</h2>
+      <p>Navigate to any LinkedIn profile page. A blue chat icon will appear in the bottom-right corner of the page. Click it to generate personalized message suggestions.</p>
     </div>
   </div>
 

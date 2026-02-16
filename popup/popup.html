@@ -18,47 +18,85 @@
       <span id="status-text"></span>
     </div>
 
-    <div class="form-group">
-      <label for="api-provider">AI Provider</label>
-      <select id="api-provider">
-        <option value="openai">OpenAI</option>
-        <option value="anthropic">Anthropic</option>
-      </select>
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="settings">Settings</button>
+      <button class="tab" data-tab="tones">Tones</button>
     </div>
 
-    <div class="form-group">
-      <label for="ai-model">Model</label>
-      <select id="ai-model"></select>
+    <!-- Settings Tab -->
+    <div class="tab-content active" id="tab-settings">
+      <div class="form-group">
+        <label for="api-provider">AI Provider</label>
+        <select id="api-provider">
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="ai-model">Model</label>
+        <select id="ai-model"></select>
+      </div>
+
+      <div class="form-group">
+        <label for="api-key">API Key</label>
+        <input type="password" id="api-key" placeholder="Enter your API key...">
+        <p class="hint" id="hint-openai">Get your key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Dashboard</a></p>
+        <p class="hint hidden" id="hint-anthropic">Get your key from <a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic Console</a></p>
+      </div>
+
+      <div class="form-group">
+        <label for="default-language">Default Language</label>
+        <select id="default-language">
+          <option value="english">English</option>
+          <option value="hebrew">Hebrew</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="user-background">Your Background</label>
+        <textarea id="user-background" rows="3" placeholder="e.g. 'I'm a sales rep at Nike selling athletic shoes to retail buyers'..."></textarea>
+        <p class="hint">This will be woven into every generated message.</p>
+      </div>
+
+      <button id="save-btn" class="save-btn">Save Settings</button>
+
+      <div id="save-status" class="save-status hidden"></div>
+
+      <div class="info-box">
+        <h2>How to use</h2>
+        <p>Navigate to any LinkedIn profile page. A blue chat icon will appear in the bottom-right corner of the page. Click it to generate personalized message suggestions.</p>
+      </div>
     </div>
 
-    <div class="form-group">
-      <label for="api-key">API Key</label>
-      <input type="password" id="api-key" placeholder="Enter your API key...">
-      <p class="hint" id="hint-openai">Get your key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Dashboard</a></p>
-      <p class="hint hidden" id="hint-anthropic">Get your key from <a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic Console</a></p>
-    </div>
+    <!-- Tones Tab -->
+    <div class="tab-content" id="tab-tones">
+      <p class="tones-intro">Customize the message tones available when generating messages. Each tone guides the AI to write in a specific style.</p>
 
-    <div class="form-group">
-      <label for="default-language">Default Language</label>
-      <select id="default-language">
-        <option value="english">English</option>
-        <option value="hebrew">Hebrew</option>
-      </select>
-    </div>
+      <div id="tones-list" class="tones-list"></div>
 
-    <div class="form-group">
-      <label for="user-background">Your Background</label>
-      <textarea id="user-background" rows="3" placeholder="e.g. 'I'm a sales rep at Nike selling athletic shoes to retail buyers'..."></textarea>
-      <p class="hint">This will be woven into every generated message.</p>
-    </div>
+      <button id="add-tone-btn" class="add-tone-btn">+ Add New Tone</button>
 
-    <button id="save-btn" class="save-btn">Save Settings</button>
+      <!-- Add/Edit Tone Form (hidden by default) -->
+      <div id="tone-form" class="tone-form hidden">
+        <div class="tone-form-title" id="tone-form-title">Add New Tone</div>
+        <div class="form-group">
+          <label for="tone-label">Name</label>
+          <input type="text" id="tone-label" placeholder="e.g. Humorous" maxlength="30">
+        </div>
+        <div class="form-group">
+          <label for="tone-description">Description</label>
+          <textarea id="tone-description" rows="2" placeholder="e.g. Light-hearted and witty - uses humor to break the ice and make a memorable first impression"></textarea>
+          <p class="hint">Describe the tone style. This guides the AI when generating messages.</p>
+        </div>
+        <div class="tone-form-actions">
+          <button id="tone-save-btn" class="tone-save-btn">Save Tone</button>
+          <button id="tone-cancel-btn" class="tone-cancel-btn">Cancel</button>
+        </div>
+      </div>
 
-    <div id="save-status" class="save-status hidden"></div>
-
-    <div class="info-box">
-      <h2>How to use</h2>
-      <p>Navigate to any LinkedIn profile page. A blue chat icon will appear in the bottom-right corner of the page. Click it to generate personalized message suggestions.</p>
+      <button id="reset-tones-btn" class="reset-tones-btn">Reset to Defaults</button>
     </div>
   </div>
 

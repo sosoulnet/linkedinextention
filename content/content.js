@@ -1,28 +1,22 @@
 // ── Constants ──────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are an expert LinkedIn marketer and you now help to create a few options of messages to send to the current user. The messages should sound natural and motivate the users to respond.`;
 
-const TONE_OPTIONS = [
-  { value: 'friendly', label: 'Friendly' },
-  { value: 'professional', label: 'Professional' },
-  { value: 'question', label: 'Question' },
-  { value: 'complimentary', label: 'Complimentary' },
-  { value: 'networking', label: 'Networking' },
-  { value: 'collaboration', label: 'Collaboration' },
+const DEFAULT_TONES = [
+  { value: 'friendly', label: 'Friendly', description: 'Friendly and warm - casual, approachable, like reaching out to a friend' },
+  { value: 'professional', label: 'Professional', description: 'Professional and formal - business-oriented, polished, respectful of their time' },
+  { value: 'question', label: 'Question', description: 'Asking an engaging question - curiosity-driven, opens dialogue by asking something relevant' },
+  { value: 'complimentary', label: 'Complimentary', description: 'Complimentary - genuinely praises their work or achievements, not over-the-top' },
+  { value: 'networking', label: 'Networking', description: 'Networking-focused - building mutual connections, finding common ground' },
+  { value: 'collaboration', label: 'Collaboration', description: 'Collaboration-oriented - proposing to work together on something specific' },
 ];
 
-const TONE_DESCRIPTIONS = {
-  friendly: 'Friendly and warm - casual, approachable, like reaching out to a friend',
-  professional:
-    'Professional and formal - business-oriented, polished, respectful of their time',
-  question:
-    'Asking an engaging question - curiosity-driven, opens dialogue by asking something relevant',
-  complimentary:
-    "Complimentary - genuinely praises their work or achievements, not over-the-top",
-  networking:
-    'Networking-focused - building mutual connections, finding common ground',
-  collaboration:
-    'Collaboration-oriented - proposing to work together on something specific',
-};
+// Active tones (loaded from storage or defaults)
+let activeTones = [...DEFAULT_TONES];
+
+async function loadTones() {
+  const { customTones } = await chrome.storage.sync.get(['customTones']);
+  activeTones = customTones && customTones.length > 0 ? customTones : [...DEFAULT_TONES];
+}
 
 // ── State ──────────────────────────────────────────────────────────
 let panelOpen = false;
@@ -64,7 +58,10 @@ function togglePanel() {
   }
 }
 
-function openPanel() {
+async function openPanel() {
+  // Load custom tones from storage
+  await loadTones();
+
   // Extract profile data from page
   profileData = extractProfileData();
 
@@ -104,10 +101,11 @@ function closePanel() {
 }
 
 function buildPanelHTML(profile) {
-  const toneCheckboxes = TONE_OPTIONS.map(
+  const firstToneValue = activeTones.length > 0 ? activeTones[0].value : '';
+  const toneCheckboxes = activeTones.map(
     (t) => `
     <label class="lmh-tone-option">
-      <input type="checkbox" name="lmh-tone" value="${t.value}" ${t.value === 'friendly' ? 'checked' : ''}>
+      <input type="checkbox" name="lmh-tone" value="${t.value}" ${t.value === firstToneValue ? 'checked' : ''}>
       <span class="lmh-tone-label">${t.label}</span>
     </label>`
   ).join('');
@@ -397,8 +395,12 @@ function extractProfileData() {
 async function generateMessages({ profileData, tones, context, apiKey, apiProvider, aiModel, userBackground, language }) {
   const profileSummary = buildProfileSummary(profileData);
 
+  // Build a lookup from active tones
+  const toneDescMap = {};
+  activeTones.forEach((t) => { toneDescMap[t.value] = t.description; });
+
   const toneInstructions = tones
-    .map((t) => `- ${TONE_DESCRIPTIONS[t] || t}`)
+    .map((t) => `- ${toneDescMap[t] || t}`)
     .join('\n');
 
   const backgroundBlock = userBackground

@@ -5,25 +5,25 @@
 }
 
 body {
-  width: 360px;
+  width: 480px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #f3f2ef;
   color: #1d2226;
 }
 
 .container {
-  padding: 16px;
+  padding: 20px;
 }
 
 header {
   text-align: center;
-  margin-bottom: 14px;
-  padding-bottom: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
   border-bottom: 1px solid #e0dfdc;
 }
 
 header h1 {
-  font-size: 17px;
+  font-size: 18px;
   color: #0a66c2;
   font-weight: 700;
 }
@@ -39,11 +39,11 @@ header h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 10px 14px;
   border-radius: 8px;
   font-size: 12px;
   font-weight: 500;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .status-banner.configured {
@@ -64,6 +64,54 @@ header h1 {
   flex-shrink: 0;
 }
 
+/* ── Tabs ───────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 18px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1.5px solid #e0dfdc;
+  background: white;
+}
+
+.tab {
+  flex: 1;
+  padding: 10px 0;
+  border: none;
+  background: white;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.tab:not(:last-child) {
+  border-right: 1.5px solid #e0dfdc;
+}
+
+.tab.active {
+  background: #0a66c2;
+  color: white;
+}
+
+.tab:not(.active):hover {
+  background: #f0f4f8;
+  color: #0a66c2;
+}
+
+/* ── Tab content ────────────────────────────────────────────────── */
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
 /* ── Form ───────────────────────────────────────────────────────── */
 .form-group {
   margin-bottom: 14px;
@@ -81,7 +129,7 @@ header h1 {
 .form-group input,
 .form-group textarea {
   width: 100%;
-  padding: 9px 10px;
+  padding: 9px 12px;
   border: 1.5px solid #e0dfdc;
   border-radius: 8px;
   font-size: 13px;
@@ -96,6 +144,7 @@ header h1 {
 .form-group input:focus,
 .form-group textarea:focus {
   border-color: #0a66c2;
+  box-shadow: 0 0 0 3px rgba(10, 102, 194, 0.1);
 }
 
 .hint {
@@ -116,12 +165,12 @@ header h1 {
 /* ── Save button ────────────────────────────────────────────────── */
 .save-btn {
   width: 100%;
-  padding: 10px;
+  padding: 11px;
   background: #0a66c2;
   color: white;
   border: none;
   border-radius: 20px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s;
@@ -175,6 +224,181 @@ header h1 {
   font-size: 12px;
   line-height: 1.5;
   color: #666;
+}
+
+/* ── Tones Tab ──────────────────────────────────────────────────── */
+.tones-intro {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+/* ── Tones list ─────────────────────────────────────────────────── */
+.tones-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tone-card {
+  background: white;
+  border: 1.5px solid #e0dfdc;
+  border-radius: 10px;
+  padding: 12px 14px;
+  transition: border-color 0.15s;
+}
+
+.tone-card:hover {
+  border-color: #b0c4de;
+}
+
+.tone-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.tone-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1d2226;
+}
+
+.tone-card-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.tone-card-btn {
+  background: none;
+  border: 1.5px solid #e0dfdc;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  color: #666;
+}
+
+.tone-card-btn:hover {
+  border-color: #0a66c2;
+  color: #0a66c2;
+}
+
+.tone-card-btn.delete:hover {
+  border-color: #dc2626;
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+.tone-card-desc {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.4;
+}
+
+/* ── Add tone button ────────────────────────────────────────────── */
+.add-tone-btn {
+  width: 100%;
+  padding: 10px;
+  background: white;
+  color: #0a66c2;
+  border: 2px dashed #b0c4de;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  margin-bottom: 14px;
+}
+
+.add-tone-btn:hover {
+  background: #e8f0fe;
+  border-color: #0a66c2;
+}
+
+/* ── Tone form ──────────────────────────────────────────────────── */
+.tone-form {
+  background: white;
+  border: 1.5px solid #0a66c2;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.tone-form-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0a66c2;
+  margin-bottom: 12px;
+}
+
+.tone-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tone-save-btn {
+  flex: 1;
+  padding: 9px;
+  background: #0a66c2;
+  color: white;
+  border: none;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-family: inherit;
+}
+
+.tone-save-btn:hover {
+  background: #004182;
+}
+
+.tone-cancel-btn {
+  flex: 1;
+  padding: 9px;
+  background: white;
+  color: #666;
+  border: 1.5px solid #e0dfdc;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.tone-cancel-btn:hover {
+  border-color: #999;
+  color: #1d2226;
+}
+
+/* ── Reset button ───────────────────────────────────────────────── */
+.reset-tones-btn {
+  width: 100%;
+  padding: 9px;
+  background: none;
+  color: #999;
+  border: 1.5px solid #e0dfdc;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.reset-tones-btn:hover {
+  border-color: #dc2626;
+  color: #dc2626;
 }
 
 /* ── Utility ────────────────────────────────────────────────────── */

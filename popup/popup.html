@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LinkedIn Message Helper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>LinkedIn Message Helper</h1>
+      <p class="subtitle">Generate personalized messages</p>
+    </header>
+
+    <div id="not-linkedin" class="notice hidden">
+      <p>Navigate to a LinkedIn profile to use this extension.</p>
+    </div>
+
+    <div id="main-content">
+      <div id="profile-section" class="section">
+        <h2>Profile Detected</h2>
+        <div id="profile-info" class="profile-card">
+          <div class="profile-name" id="profile-name">Loading...</div>
+          <div class="profile-headline" id="profile-headline"></div>
+          <div class="profile-location" id="profile-location"></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Message Tone</h2>
+        <div class="tone-grid">
+          <label class="tone-option">
+            <input type="checkbox" name="tone" value="friendly" checked>
+            <span class="tone-label">Friendly</span>
+          </label>
+          <label class="tone-option">
+            <input type="checkbox" name="tone" value="professional">
+            <span class="tone-label">Professional</span>
+          </label>
+          <label class="tone-option">
+            <input type="checkbox" name="tone" value="question">
+            <span class="tone-label">Question</span>
+          </label>
+          <label class="tone-option">
+            <input type="checkbox" name="tone" value="complimentary">
+            <span class="tone-label">Complimentary</span>
+          </label>
+          <label class="tone-option">
+            <input type="checkbox" name="tone" value="networking">
+            <span class="tone-label">Networking</span>
+          </label>
+          <label class="tone-option">
+            <input type="checkbox" name="tone" value="collaboration">
+            <span class="tone-label">Collaboration</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Context <span class="optional">(optional)</span></h2>
+        <textarea id="context-input" placeholder="Add any context, e.g., 'I want to discuss a job opportunity' or 'We met at a conference'..." rows="3"></textarea>
+      </div>
+
+      <button id="generate-btn" class="generate-btn">Generate Messages</button>
+
+      <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <p>Crafting personalized messages...</p>
+      </div>
+
+      <div id="results" class="section hidden">
+        <h2>Generated Messages</h2>
+        <div id="messages-container"></div>
+      </div>
+
+      <div id="error" class="error hidden">
+        <p id="error-message"></p>
+        <button id="settings-link" class="link-btn">Open Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

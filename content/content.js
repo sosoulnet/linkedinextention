@@ -142,8 +142,6 @@ function buildPanelHTML(profile) {
       <div id="lmh-error" class="lmh-error lmh-hidden">
         <span id="lmh-error-msg"></span>
       </div>
-
-      <div id="lmh-results" class="lmh-results lmh-hidden"></div>
     </div>
   `;
 }
@@ -177,12 +175,10 @@ function bindPanelEvents(panel) {
 
     const generateBtn = panel.querySelector('#lmh-generate-btn');
     const loadingEl = panel.querySelector('#lmh-loading');
-    const resultsEl = panel.querySelector('#lmh-results');
     const errorEl = panel.querySelector('#lmh-error');
 
     generateBtn.disabled = true;
     loadingEl.classList.remove('lmh-hidden');
-    resultsEl.classList.add('lmh-hidden');
     errorEl.classList.add('lmh-hidden');
 
     try {
@@ -194,7 +190,7 @@ function bindPanelEvents(panel) {
         apiProvider: apiProvider || 'openai',
         userBackground: userBackground || '',
       });
-      displayMessagesInPanel(resultsEl, messages);
+      displayMessagesInPanel(null, messages);
     } catch (err) {
       showPanelError(err.message || 'Failed to generate messages.');
     } finally {
@@ -213,9 +209,28 @@ function showPanelError(msg) {
   }
 }
 
-function displayMessagesInPanel(container, messages) {
-  container.innerHTML = '';
-  container.classList.remove('lmh-hidden');
+function displayMessagesInPanel(_container, messages) {
+  // Remove any existing modal
+  document.getElementById('lmh-modal-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'lmh-modal-overlay';
+
+  const modal = document.createElement('div');
+  modal.className = 'lmh-modal';
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'lmh-modal-header';
+  header.innerHTML = `
+    <span class="lmh-modal-title">Choose a Message</span>
+    <button class="lmh-modal-close">&times;</button>
+  `;
+  modal.appendChild(header);
+
+  // Body with message cards
+  const body = document.createElement('div');
+  body.className = 'lmh-modal-body';
 
   messages.forEach((msg) => {
     const card = document.createElement('div');
@@ -250,6 +265,7 @@ function displayMessagesInPanel(container, messages) {
     useBtn.textContent = 'Insert in Chat';
     useBtn.addEventListener('click', () => {
       insertMessage(msg.text);
+      closeModal();
     });
 
     actions.appendChild(copyBtn);
@@ -257,7 +273,26 @@ function displayMessagesInPanel(container, messages) {
     card.appendChild(tag);
     card.appendChild(text);
     card.appendChild(actions);
-    container.appendChild(card);
+    body.appendChild(card);
+  });
+
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Animate in
+  requestAnimationFrame(() => overlay.classList.add('lmh-modal-visible'));
+
+  // Close handlers
+  function closeModal() {
+    overlay.classList.remove('lmh-modal-visible');
+    overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+    setTimeout(() => overlay.remove(), 350);
+  }
+
+  header.querySelector('.lmh-modal-close').addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
   });
 }
 

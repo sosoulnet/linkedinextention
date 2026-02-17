@@ -139,13 +139,6 @@
   margin-top: 2px;
 }
 
-.lmh-profile-mutual {
-  font-size: 11px;
-  color: #0a66c2;
-  font-weight: 500;
-  margin-top: 4px;
-}
-
 /* ── Tone grid ──────────────────────────────────────────────────── */
 .lmh-tone-grid {
   display: grid;

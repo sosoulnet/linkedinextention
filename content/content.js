@@ -88,32 +88,13 @@ async function openPanel() {
   // Animate in
   requestAnimationFrame(() => panel.classList.add('lmh-panel-visible'));
 
-  // Background: open the mutual-connections modal, scrape the full list,
-  // then update profileData so it's ready when the user clicks Generate.
+  // Background: scrape the full mutual-connections list via Voyager API
+  // so it's ready for the AI prompt when the user clicks Generate.
   if (profileData.mutualConnections?.count > 0) {
-    const mutualEl = panel.querySelector('.lmh-profile-mutual');
-    if (mutualEl) {
-      mutualEl.textContent += ' (loading full list…)';
-    }
-
     scrapeFullMutualConnections().then(({ names: fullNames, debug }) => {
-      // Store debug info for QA panel
       profileData.mutualConnections.fetchDebug = debug;
-
-      const el = document.querySelector('#lmh-panel .lmh-profile-mutual');
-      const count = profileData.mutualConnections.count;
-
       if (fullNames && fullNames.length > 0) {
         profileData.mutualConnections.names = fullNames;
-        if (el) {
-          el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}: ${fullNames.join(', ')}`;
-        }
-      } else {
-        // Remove loading indicator, show existing names
-        const existingNames = profileData.mutualConnections.names;
-        if (el) {
-          el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}${existingNames.length > 0 ? ': ' + existingNames.join(', ') : ''} (full list fetch: ${debug.step})`;
-        }
       }
     });
   }
@@ -154,7 +135,6 @@ function buildPanelHTML(profile) {
           <div class="lmh-profile-name">${escapeHTML(profile.name || 'Unknown')}</div>
           <div class="lmh-profile-headline">${escapeHTML(profile.headline || '')}</div>
           <div class="lmh-profile-location">${escapeHTML(profile.location || '')}</div>
-          ${profile.mutualConnections?.count > 0 ? `<div class="lmh-profile-mutual">${profile.mutualConnections.count} mutual connection${profile.mutualConnections.count !== 1 ? 's' : ''}${profile.mutualConnections.names.length > 0 ? ': ' + escapeHTML(profile.mutualConnections.names.join(', ')) : ''}</div>` : ''}
         </div>
       </div>
 

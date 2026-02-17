@@ -859,15 +859,15 @@ async function sendLinkedInMessage(recipientName, messageText) {
   if (!memberId) throw new Error('Could not find profile for: ' + recipientName);
   console.log(`[LMH] Resolved memberId="${memberId}" for "${recipientName}"`);
 
-  // 2. Send the message
-  //    LinkedIn Voyager uses "attributedBody" (not "body") and
-  //    recipients can be raw member IDs or urn:li:fs_miniProfile:ID
+  // 2. Send the message — try 4 strategies with different recipient formats.
+  //    LinkedIn Voyager accepts both "body" and "attributedBody" fields.
+  //    The ?action=create query parameter is required for the legacy endpoint.
   const errors = [];
 
   // 2a. Legacy messaging API — raw member ID as recipient
   try {
     console.log(`[LMH] Trying legacy /messaging/conversations (memberId=${memberId})…`);
-    const legacyResp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations', {
+    const legacyResp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
       method: 'POST',
       headers: {
         'csrf-token': csrfToken,
@@ -882,11 +882,13 @@ async function sendLinkedInMessage(recipientName, messageText) {
           eventCreate: {
             value: {
               'com.linkedin.voyager.messaging.create.MessageCreate': {
+                body: messageText,
                 attributedBody: {
                   text: messageText,
                   attributes: [],
                 },
                 attachments: [],
+                mediaAttachments: [],
               },
             },
           },
@@ -912,7 +914,7 @@ async function sendLinkedInMessage(recipientName, messageText) {
   try {
     const miniProfileUrn = `urn:li:fs_miniProfile:${memberId}`;
     console.log(`[LMH] Trying legacy with miniProfile URN: ${miniProfileUrn}…`);
-    const legacyResp2 = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations', {
+    const legacyResp2 = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
       method: 'POST',
       headers: {
         'csrf-token': csrfToken,
@@ -927,11 +929,13 @@ async function sendLinkedInMessage(recipientName, messageText) {
           eventCreate: {
             value: {
               'com.linkedin.voyager.messaging.create.MessageCreate': {
+                body: messageText,
                 attributedBody: {
                   text: messageText,
                   attributes: [],
                 },
                 attachments: [],
+                mediaAttachments: [],
               },
             },
           },
@@ -968,7 +972,10 @@ async function sendLinkedInMessage(recipientName, messageText) {
       body: JSON.stringify({
         dedupeByClientGeneratedToken: false,
         message: {
-          body: { text: messageText },
+          body: {
+            text: messageText,
+            attributes: [],
+          },
           renderContentUnions: [],
         },
         hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
@@ -985,6 +992,53 @@ async function sendLinkedInMessage(recipientName, messageText) {
   } catch (e) {
     errors.push(`dash error: ${e.message}`);
     console.warn('[LMH] Dash API error:', e);
+  }
+
+  // 2d. Legacy messaging API — with urn:li:fsd_profile: prefix
+  try {
+    const fsdProfileUrn = `urn:li:fsd_profile:${memberId}`;
+    console.log(`[LMH] Trying legacy with fsd_profile URN: ${fsdProfileUrn}…`);
+    const legacyResp3 = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
+      method: 'POST',
+      headers: {
+        'csrf-token': csrfToken,
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        'content-type': 'application/json; charset=UTF-8',
+        'x-restli-protocol-version': '2.0.0',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        keyVersion: 'LEGACY_INBOX',
+        conversationCreate: {
+          eventCreate: {
+            value: {
+              'com.linkedin.voyager.messaging.create.MessageCreate': {
+                body: messageText,
+                attributedBody: {
+                  text: messageText,
+                  attributes: [],
+                },
+                attachments: [],
+                mediaAttachments: [],
+              },
+            },
+          },
+          recipients: [fsdProfileUrn],
+          subtype: 'MEMBER_TO_MEMBER',
+        },
+      }),
+    });
+
+    if (legacyResp3.ok || legacyResp3.status === 201) {
+      console.log('[LMH] Message sent via legacy API (fsd_profile)!');
+      return;
+    }
+    const errText = await legacyResp3.text();
+    errors.push(`legacy(fsd_profile) ${legacyResp3.status}: ${errText.slice(0, 300)}`);
+    console.warn(`[LMH] Legacy fsd_profile failed:`, legacyResp3.status, errText.slice(0, 300));
+  } catch (e) {
+    errors.push(`legacy(fsd_profile) error: ${e.message}`);
+    console.warn('[LMH] Legacy fsd_profile error:', e);
   }
 
   throw new Error(`Send failed: ${errors.join(' | ')}`);

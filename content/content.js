@@ -21,7 +21,7 @@ async function loadTones() {
 // ── State ──────────────────────────────────────────────────────────
 let panelOpen = false;
 let profileData = null;
-let lastPrompts = null; // { system, user } — stored for QA inspection
+let lastPrompts = null; // { system, user, mutualRaw } — stored for QA inspection
 
 // ── Inject UI on load ──────────────────────────────────────────────
 createFloatingButton();
@@ -301,7 +301,14 @@ function displayMessagesInPanel(_container, messages) {
   const qaPanel = document.createElement('div');
   qaPanel.className = 'lmh-qa-panel lmh-hidden';
   if (lastPrompts) {
+    const mutualDebug = lastPrompts.mutualRaw
+      ? JSON.stringify(lastPrompts.mutualRaw, null, 2)
+      : '{ "count": 0, "names": [] }';
     qaPanel.innerHTML = `
+      <div class="lmh-qa-section">
+        <div class="lmh-qa-label">Mutual Connections (scraped)</div>
+        <pre class="lmh-qa-pre">${escapeHTML(mutualDebug)}</pre>
+      </div>
       <div class="lmh-qa-section">
         <div class="lmh-qa-label">System Prompt</div>
         <pre class="lmh-qa-pre">${escapeHTML(lastPrompts.system)}</pre>
@@ -561,8 +568,8 @@ Respond in this exact JSON format only, with no other text:
     ? `${SYSTEM_PROMPT} The sender has provided their background: "${userBackground}". Incorporate this naturally into the messages — the outreach should clearly relate to the sender's role, industry, or goals.`
     : SYSTEM_PROMPT;
 
-  // Store prompts for QA inspection
-  lastPrompts = { system: systemPrompt, user: userPrompt };
+  // Store prompts + debug data for QA inspection
+  lastPrompts = { system: systemPrompt, user: userPrompt, mutualRaw: profileData.mutualConnections };
 
   const defaultModel = apiProvider === 'openai' ? 'gpt-5.2' : 'claude-sonnet-4-20250514';
   const model = aiModel || defaultModel;

@@ -880,54 +880,50 @@ function sendViaPageContext(recipientId, fsdId, messageText, csrfToken) {
       }
     })();`;
 
-    // Try multiple injection methods — LinkedIn's CSP may block some
-    let injected = false;
+    // Try ALL injection methods — CSP blocks are async (onerror), so we
+    // can't know synchronously if a method worked.  The first script that
+    // actually executes will send the postMessage response; duplicates are
+    // harmless because the listener removes itself on the first message.
 
-    // Method 1: blob URL (works if CSP allows blob: scripts)
+    // Method 1: blob URL
     try {
       const blob = new Blob([scriptCode], { type: 'text/javascript' });
-      const url = URL.createObjectURL(blob);
+      const blobUrl = URL.createObjectURL(blob);
       const el = document.createElement('script');
-      el.src = url;
+      el.src = blobUrl;
       el.onerror = () => console.warn('[LMH] blob: script blocked by CSP');
       document.head.appendChild(el);
       el.remove();
-      URL.revokeObjectURL(url);
-      injected = true;
+      URL.revokeObjectURL(blobUrl);
     } catch (e) {
       console.warn('[LMH] blob injection failed:', e);
     }
 
-    // Method 2: inline script (works if CSP allows unsafe-inline or nonce)
-    if (!injected) {
-      try {
-        const el = document.createElement('script');
-        el.textContent = scriptCode;
-        document.head.appendChild(el);
-        el.remove();
-        injected = true;
-      } catch (e) {
-        console.warn('[LMH] inline injection failed:', e);
-      }
+    // Method 2: inline script
+    try {
+      const el = document.createElement('script');
+      el.textContent = scriptCode;
+      document.head.appendChild(el);
+      el.remove();
+    } catch (e) {
+      console.warn('[LMH] inline injection failed:', e);
     }
 
     // Method 3: chrome.scripting.executeScript via background service worker
     //           (most reliable — bypasses all CSP restrictions)
-    if (!injected) {
-      try {
-        console.log('[LMH] Trying chrome.scripting.executeScript via background…');
-        chrome.runtime.sendMessage(
-          { type: 'lmh-exec-main-world', code: scriptCode },
-          (resp) => {
-            if (chrome.runtime.lastError) {
-              console.warn('[LMH] Background exec failed:', chrome.runtime.lastError.message);
-            }
-            // Response comes via postMessage from the injected script, not here
+    try {
+      console.log('[LMH] Requesting chrome.scripting.executeScript via background…');
+      chrome.runtime.sendMessage(
+        { type: 'lmh-exec-main-world', code: scriptCode },
+        (resp) => {
+          if (chrome.runtime.lastError) {
+            console.warn('[LMH] Background exec failed:', chrome.runtime.lastError.message);
           }
-        );
-      } catch (e) {
-        console.warn('[LMH] Background exec request failed:', e);
-      }
+          // Response comes via postMessage from the injected script, not here
+        }
+      );
+    } catch (e) {
+      console.warn('[LMH] Background exec request failed:', e);
     }
 
     // Timeout after 20 seconds
@@ -1147,10 +1143,14 @@ async function sendLinkedInMessage(recipientName, messageText) {
     );
     if (convResp.ok) {
       const convData = await convResp.json();
+      console.log('[LMH] Conversation lookup response keys:', Object.keys(convData));
       const conversations = convData.elements || convData.data?.elements || [];
+      console.log(`[LMH] Found ${conversations.length} existing conversation(s)`);
       if (conversations.length > 0) {
-        const convId = conversations[0].entityUrn || conversations[0]['*conversation'];
-        const convKey = (convId || '').replace(/^urn:li:fs_conversation:/, '');
+        const conv = conversations[0];
+        const convId = conv.entityUrn || conv['*conversation'] || conv.backendUrn;
+        console.log('[LMH] Conversation entity:', convId, 'keys:', Object.keys(conv));
+        const convKey = (convId || '').replace(/^urn:li:(fs_conversation|msg_conversation):/, '');
         if (convKey) {
           console.log(`[LMH] Found existing conversation: ${convKey}`);
           const eventBody = JSON.stringify({
@@ -1167,8 +1167,11 @@ async function sendLinkedInMessage(recipientName, messageText) {
           if (await trySend('existing-conv', `https://www.linkedin.com/voyager/api/messaging/conversations/${convKey}/events?action=create`, eventBody)) return;
         }
       } else {
-        console.log('[LMH] No existing conversation found');
+        console.log('[LMH] No existing conversation found — this person may not be a 1st-degree connection');
       }
+    } else {
+      const errText = await convResp.text();
+      console.warn(`[LMH] Conversation lookup failed: ${convResp.status}`, errText.slice(0, 200));
     }
   } catch (e) {
     console.warn('[LMH] Existing conversation lookup failed:', e);
@@ -1222,6 +1225,11 @@ async function sendLinkedInMessage(recipientName, messageText) {
     console.warn('[LMH] Page context send failed:', e);
   }
 
+  // Check if the failure is because the person isn't a 1st-degree connection
+  const allForbidden = errors.every(e => e.includes('403') || e.includes('timed out'));
+  if (allForbidden) {
+    throw new Error(`Cannot message "${recipientName}" — they may not be a 1st-degree connection. If the mutual connections list contained wrong names, please re-scrape.`);
+  }
   throw new Error(`Send failed: ${errors.join(' | ')}`);
 }
 

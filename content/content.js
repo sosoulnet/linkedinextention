@@ -580,6 +580,9 @@ async function openMutualFriendsModal() {
   }
 
   // Render friend list with checkboxes
+  const profileName = profileData.name || 'this person';
+  const defaultMessage = `Hey [friend], I'd love your help with an intro to ${profileName}. I think I can be highly relevant for them.`;
+
   body.innerHTML = `
     <div class="lmh-mutual-toolbar">
       <label class="lmh-mutual-select-all">
@@ -595,85 +598,91 @@ async function openMutualFriendsModal() {
         </label>
       `).join('')}
     </div>
-    <div class="lmh-mutual-message-section">
-      <div class="lmh-section-label">Intro request message</div>
-      <textarea id="lmh-mutual-message" class="lmh-textarea" rows="3" placeholder="The message to send your mutual friends..."></textarea>
+    <div id="lmh-tagged-section" class="lmh-tagged-section lmh-hidden">
+      <div class="lmh-section-label">Tagged friends</div>
+      <div id="lmh-tagged-list" class="lmh-tagged-list"></div>
     </div>
-    <button id="lmh-mutual-generate-btn" class="lmh-generate-btn" style="margin-top:8px">Generate Intro Message</button>
-    <button id="lmh-mutual-submit-btn" class="lmh-generate-btn lmh-mutual-submit-btn" disabled style="margin-top:4px">Send to Selected Friends</button>
+    <div class="lmh-mutual-message-section">
+      <div class="lmh-section-label">Intro request message <span class="lmh-optional">— use [friend] as placeholder</span></div>
+      <textarea id="lmh-mutual-message" class="lmh-textarea" rows="3">${escapeHTML(defaultMessage)}</textarea>
+    </div>
+    <button id="lmh-mutual-submit-btn" class="lmh-generate-btn lmh-mutual-submit-btn" disabled style="margin-top:8px">Send to Selected Friends</button>
   `;
 
   const checkboxes = body.querySelectorAll('.lmh-mutual-cb');
   const selectAllCb = body.querySelector('#lmh-mutual-select-all');
   const selectedCountEl = body.querySelector('#lmh-mutual-selected-count');
   const submitBtn = body.querySelector('#lmh-mutual-submit-btn');
-  const generateBtn = body.querySelector('#lmh-mutual-generate-btn');
   const messageTextarea = body.querySelector('#lmh-mutual-message');
+  const taggedSection = body.querySelector('#lmh-tagged-section');
+  const taggedList = body.querySelector('#lmh-tagged-list');
 
-  function updateCount() {
-    const count = body.querySelectorAll('.lmh-mutual-cb:checked').length;
-    selectedCountEl.textContent = count;
-    submitBtn.disabled = count === 0 || !messageTextarea.value.trim();
+  function getSelectedNames() {
+    return [...body.querySelectorAll('.lmh-mutual-cb:checked')].map((cb) => cb.dataset.name);
+  }
+
+  function updateTaggedList() {
+    const selected = getSelectedNames();
+    selectedCountEl.textContent = selected.length;
+    submitBtn.disabled = selected.length === 0 || !messageTextarea.value.trim();
+
+    if (selected.length === 0) {
+      taggedSection.classList.add('lmh-hidden');
+      return;
+    }
+
+    taggedSection.classList.remove('lmh-hidden');
+    taggedList.innerHTML = selected.map((name) => `
+      <span class="lmh-tag-chip" data-name="${escapeHTML(name)}">
+        ${escapeHTML(name)}
+        <span class="lmh-tag-remove" title="Remove">&times;</span>
+      </span>
+    `).join('');
+
+    // Remove chip → uncheck the corresponding checkbox
+    taggedList.querySelectorAll('.lmh-tag-remove').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const chipName = btn.parentElement.dataset.name;
+        const cb = body.querySelector(`.lmh-mutual-cb[data-name="${CSS.escape(chipName)}"]`);
+        if (cb) { cb.checked = false; }
+        selectAllCb.checked = false;
+        updateTaggedList();
+      });
+    });
   }
 
   checkboxes.forEach((cb) => cb.addEventListener('change', () => {
-    updateCount();
+    updateTaggedList();
     selectAllCb.checked = body.querySelectorAll('.lmh-mutual-cb:checked').length === checkboxes.length;
   }));
 
   selectAllCb.addEventListener('change', () => {
     checkboxes.forEach((cb) => { cb.checked = selectAllCb.checked; });
-    updateCount();
+    updateTaggedList();
   });
 
-  messageTextarea.addEventListener('input', updateCount);
-
-  // Generate intro message via AI
-  generateBtn.addEventListener('click', async () => {
-    const { apiKey, apiProvider, aiModel, userBackground } = await chrome.storage.sync.get([
-      'apiKey', 'apiProvider', 'aiModel', 'userBackground',
-    ]);
-    if (!apiKey) {
-      showNotification('API key not configured. Click the extension toolbar icon to set it up.');
-      return;
-    }
-
-    generateBtn.disabled = true;
-    generateBtn.textContent = 'Generating...';
-
-    try {
-      const introMessage = await generateIntroMessage({
-        profileData,
-        apiKey,
-        apiProvider: apiProvider || 'openai',
-        aiModel: aiModel || '',
-        userBackground: userBackground || '',
-      });
-      messageTextarea.value = introMessage;
-      updateCount();
-    } catch (err) {
-      showNotification('Failed to generate message: ' + err.message);
-    } finally {
-      generateBtn.disabled = false;
-      generateBtn.textContent = 'Generate Intro Message';
-    }
+  messageTextarea.addEventListener('input', () => {
+    const selected = getSelectedNames();
+    submitBtn.disabled = selected.length === 0 || !messageTextarea.value.trim();
   });
 
-  // Submit: send message to each selected friend
+  // Submit: send personalized message to each selected friend
   submitBtn.addEventListener('click', async () => {
-    const selected = [...body.querySelectorAll('.lmh-mutual-cb:checked')]
-      .map((cb) => cb.dataset.name);
-    const message = messageTextarea.value.trim();
+    const selected = getSelectedNames();
+    const messageTemplate = messageTextarea.value.trim();
 
-    if (selected.length === 0 || !message) return;
+    if (selected.length === 0 || !messageTemplate) return;
 
     submitBtn.disabled = true;
     submitBtn.textContent = `Sending to ${selected.length} friend(s)...`;
 
     let sent = 0;
     for (const friendName of selected) {
+      const firstName = friendName.split(' ')[0];
+      const personalizedMessage = messageTemplate.replace(/\[friend\]/gi, firstName);
       try {
-        await sendLinkedInMessage(friendName, message);
+        await sendLinkedInMessage(friendName, personalizedMessage);
         sent++;
       } catch (err) {
         console.error(`Failed to send to ${friendName}:`, err);
@@ -687,25 +696,6 @@ async function openMutualFriendsModal() {
       submitBtn.disabled = false;
     }, 3000);
   });
-}
-
-// ── Generate intro request message via AI ─────────────────────────
-async function generateIntroMessage({ profileData, apiKey, apiProvider, aiModel, userBackground }) {
-  const profileSummary = buildProfileSummary(profileData);
-
-  const systemPrompt = `You are a networking assistant. Write a short, friendly message that a user can send to their mutual connections asking for an introduction to someone on LinkedIn. The message should be personal, not pushy, and explain why an introduction would be valuable.${userBackground ? `\n\nAbout the person sending this request:\n${userBackground}` : ''}`;
-
-  const userPrompt = `I want to ask my mutual connections to introduce me to this person:
-
-${profileSummary}
-
-Write a single short message (2-4 sentences) I can send to a mutual friend asking them to introduce me to this person. Keep it natural and friendly. Return ONLY the message text, no quotes or formatting.`;
-
-  const defaultModel = apiProvider === 'openai' ? 'gpt-5.2' : 'claude-sonnet-4-20250514';
-  const model = aiModel || defaultModel;
-  const callFn = apiProvider === 'anthropic' ? callAnthropicRaw : callOpenAIRaw;
-  const response = await callFn(apiKey, userPrompt, systemPrompt, model);
-  return response.trim();
 }
 
 // ── Send LinkedIn message via Voyager API ─────────────────────────
@@ -1222,53 +1212,6 @@ async function callAnthropic(apiKey, userPrompt, systemPrompt, model) {
   const data = await response.json();
   const content = data.content?.[0]?.text || '';
   return parseMessagesJSON(content);
-}
-
-async function callOpenAIRaw(apiKey, userPrompt, systemPrompt, model) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.8,
-      max_completion_tokens: 1024,
-    }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `OpenAI API error: ${response.status}`);
-  }
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || '';
-}
-
-async function callAnthropicRaw(apiKey, userPrompt, systemPrompt, model) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
-      temperature: 0.8,
-    }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Anthropic API error: ${response.status}`);
-  }
-  const data = await response.json();
-  return data.content?.[0]?.text || '';
 }
 
 function parseMessagesJSON(content) {

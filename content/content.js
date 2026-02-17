@@ -1100,24 +1100,75 @@ async function scrapeFullMutualConnections(onProgress) {
       }
 
       // Log first page structure for debugging
-      if (debug.pages === 1 && Array.isArray(data.included)) {
-        const profileItems = data.included.filter(i => i.firstName && i.lastName);
-        console.log(`[LMH] Page 1: ${data.included.length} included items, ${profileItems.length} with firstName+lastName`);
-        if (profileItems.length > 0) {
-          console.log('[LMH] Sample profile:', profileItems[0].firstName, profileItems[0].lastName);
+      if (debug.pages === 1) {
+        if (Array.isArray(data.included) && data.included.length > 0) {
+          // Dump full first 3 items so we can see the actual property names
+          console.log('[LMH] INCLUDED ITEM 0:', JSON.stringify(data.included[0]));
+          console.log('[LMH] INCLUDED ITEM 1:', JSON.stringify(data.included[1]));
+          console.log('[LMH] INCLUDED ITEM 2:', JSON.stringify(data.included[2]));
+          // Find an item with the most keys (likely a profile)
+          let richest = data.included[0];
+          for (const item of data.included) {
+            if (Object.keys(item).length > Object.keys(richest).length) richest = item;
+          }
+          console.log('[LMH] RICHEST ITEM (' + Object.keys(richest).length + ' keys):', JSON.stringify(richest).slice(0, 3000));
         }
-        // Dump keys of first few included items to understand the structure
-        console.log('[LMH] First 3 included item keys:', data.included.slice(0, 3).map(i => Object.keys(i)));
+        // Dump first element from data.data.elements
+        const elements = data?.data?.elements;
+        if (Array.isArray(elements) && elements.length > 0) {
+          console.log('[LMH] ELEMENT 0:', JSON.stringify(elements[0]).slice(0, 3000));
+        }
       }
 
       const prevSize = names.size;
 
-      // Extract names: scan included[] for profiles with firstName + lastName
+      // Extract names — try every possible property pattern
       if (Array.isArray(data.included)) {
         for (const item of data.included) {
+          // Standard: firstName + lastName
           if (item.firstName && item.lastName) {
             names.add(`${item.firstName} ${item.lastName}`);
           }
+          // Alternative: title.text (used in search result entities)
+          if (item.title?.text && /^[A-Z]/.test(item.title.text) && item.title.text.includes(' ')) {
+            names.add(item.title.text.trim());
+          }
+        }
+      }
+
+      // Also try extracting from data.data.elements (the actual search results)
+      const elements = data?.data?.elements;
+      if (Array.isArray(elements)) {
+        for (const cluster of elements) {
+          const items = cluster.items || cluster.elements || [];
+          for (const entry of items) {
+            // Deeply search for title.text or name patterns
+            const str = JSON.stringify(entry);
+            // Match "title":{"text":"Some Name"} pattern
+            const titleMatches = str.matchAll(/"title"\s*:\s*\{\s*"text"\s*:\s*"([^"]+)"/g);
+            for (const m of titleMatches) {
+              const name = m[1].trim();
+              if (name.includes(' ') && name.length > 2 && name.length < 80
+                && /^[A-Z]/.test(name) && !/\d/.test(name) && !/mutual/i.test(name)
+                && !/follower/i.test(name) && !/connection/i.test(name)) {
+                names.add(name);
+              }
+            }
+            // Match "firstName":"X","lastName":"Y" pattern
+            const nameMatches = str.matchAll(/"firstName"\s*:\s*"([^"]+)"\s*,\s*"lastName"\s*:\s*"([^"]+)"/g);
+            for (const m of nameMatches) {
+              names.add(`${m[1]} ${m[2]}`);
+            }
+          }
+        }
+      }
+
+      // Last resort: regex the entire response for any name patterns
+      if (names.size === prevSize) {
+        const fullStr = JSON.stringify(data);
+        const nameMatches = fullStr.matchAll(/"firstName"\s*:\s*"([^"]+)"\s*,\s*"lastName"\s*:\s*"([^"]+)"/g);
+        for (const m of nameMatches) {
+          names.add(`${m[1]} ${m[2]}`);
         }
       }
 

@@ -459,63 +459,51 @@ function extractProfileData() {
 function extractMutualConnections() {
   const result = { count: 0, names: [] };
 
-  // LinkedIn format: "Roi Sagiv, Elik Rozenboim, and 377 other mutual connections"
-  // or simply: "42 mutual connections"
-  // Find the best text containing "mutual connection(s)".
-  let mutualText = '';
+  // Get the full visible page text — this is the most reliable way to
+  // find the mutual connections line regardless of DOM structure.
+  const pageText = document.body.innerText || '';
 
-  for (const el of document.querySelectorAll('*')) {
-    const text = (el.innerText || el.textContent || '').trim();
-    if (text.length > 0 && text.length < 300 && /mutual\s+connection/i.test(text)) {
-      // Prefer elements that also contain a number (the full line)
-      if (/\d/.test(text)) {
-        mutualText = text;
-        break;
-      }
-      // Save as fallback if no number found yet
-      if (!mutualText) mutualText = text;
+  // Find the line containing "mutual connection" — LinkedIn shows:
+  // "Roi Sagiv, Elik Rozenboim, and 377 other mutual connections"
+  // or: "42 mutual connections"
+  const lines = pageText.split('\n');
+  let mutualLine = '';
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/mutual\s+connection/i.test(trimmed)) {
+      mutualLine = trimmed;
+      break;
     }
   }
 
-  if (!mutualText) return result;
+  if (!mutualLine) return result;
 
-  // If we only found text without a number, walk up to find the full line
-  if (!/\d/.test(mutualText)) {
-    for (const el of document.querySelectorAll('*')) {
-      const text = (el.innerText || el.textContent || '').trim();
-      if (text.length < 500 && /\d/.test(text) && /mutual\s+connection/i.test(text)) {
-        mutualText = text;
-        break;
-      }
-    }
-  }
+  // Store the raw line for debugging
+  result.rawLine = mutualLine;
 
-  // ── Extract count and names ───────────────────────────────────────
   // Pattern A: "Name1, Name2, and 377 other mutual connections"
-  const otherMatch = mutualText.match(/^(.+?),?\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
-  if (otherMatch) {
-    const namesPart = otherMatch[1];
-    const otherCount = parseInt(otherMatch[2], 10);
+  const multiNameMatch = mutualLine.match(/(.+?),?\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
+  if (multiNameMatch) {
+    const namesPart = multiNameMatch[1];
+    const otherCount = parseInt(multiNameMatch[2], 10);
     const names = namesPart.split(/,\s*/).map((n) => n.trim()).filter((n) => n.length > 1);
-    result.names.push(...names);
-    result.count = otherCount + names.length;
-    result.names = [...new Set(result.names)].slice(0, 5);
+    result.names = [...new Set(names)].slice(0, 5);
+    result.count = otherCount + result.names.length;
     return result;
   }
 
   // Pattern B: "Name and 52 other mutual connections"
-  const singleMatch = mutualText.match(/^(.+?)\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
-  if (singleMatch) {
-    const name = singleMatch[1].trim();
-    const otherCount = parseInt(singleMatch[2], 10);
+  const singleNameMatch = mutualLine.match(/(.+?)\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
+  if (singleNameMatch) {
+    const name = singleNameMatch[1].trim();
+    const otherCount = parseInt(singleNameMatch[2], 10);
     if (name.length > 1) result.names.push(name);
     result.count = otherCount + result.names.length;
-    result.names = [...new Set(result.names)].slice(0, 5);
     return result;
   }
 
-  // Pattern C: "42 mutual connections" (no names listed)
-  const directMatch = mutualText.match(/(\d+)\s+mutual\s+connection/i);
+  // Pattern C: "42 mutual connections" (no names)
+  const directMatch = mutualLine.match(/(\d+)\s+mutual\s+connection/i);
   if (directMatch) {
     result.count = parseInt(directMatch[1], 10);
     return result;

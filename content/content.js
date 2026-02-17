@@ -428,37 +428,61 @@ function extractProfileData() {
 
 function extractMutualConnections() {
   const result = { count: 0, names: [] };
+  const mutualPattern = /(\d+)\s+(?:mutual|shared)\s+connection/i;
+  const mutualTestPattern = /(?:mutual|shared)\s+connection/i;
 
-  // ── 1. Find the mutual-connections element via broad text search ──
-  // LinkedIn uses various DOM structures; the most reliable approach is
-  // to walk all links and spans looking for the "mutual connection" text.
+  // ── 1. Find the mutual-connections element ────────────────────────
+  // LinkedIn uses various DOM structures and element types, so we
+  // walk ALL elements and check their direct text content.
   let mutualElement = null;
 
-  // First try: any <a> whose visible text mentions "mutual connection(s)"
-  for (const el of document.querySelectorAll('a, button, span')) {
-    const text = el.textContent?.trim() || '';
-    if (/mutual\s+connection/i.test(text)) {
-      // Extract count from text like "32 mutual connections" or "1 mutual connection"
-      const countMatch = text.match(/(\d+)\s+mutual\s+connection/i);
+  const allElements = document.querySelectorAll('*');
+  for (const el of allElements) {
+    // Use innerText of the element itself (not children) to avoid
+    // matching on huge parent containers. Check the element's own
+    // childNodes for text nodes first, then fall back to textContent
+    // for small elements.
+    let ownText = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        ownText += node.textContent;
+      }
+    }
+    ownText = ownText.trim();
+
+    // If the element's own text nodes mention mutual connections, use it
+    if (mutualTestPattern.test(ownText)) {
+      const countMatch = ownText.match(mutualPattern);
       if (countMatch) {
         result.count = parseInt(countMatch[1], 10);
       }
       mutualElement = el;
       break;
     }
+
+    // Also check short textContent (leaf-ish elements only, < 200 chars)
+    if (!mutualElement) {
+      const text = el.textContent?.trim() || '';
+      if (text.length < 200 && mutualTestPattern.test(text)) {
+        const countMatch = text.match(mutualPattern);
+        if (countMatch) {
+          result.count = parseInt(countMatch[1], 10);
+        }
+        mutualElement = el;
+        break;
+      }
+    }
   }
 
   // ── 2. Extract mutual connection names ────────────────────────────
-  // Walk up from the mutual element to find the containing block,
-  // then look for names in nearby img[alt], aria-labels, and text nodes.
   if (mutualElement) {
-    // Walk up a few levels to find the container that holds the avatars/names
+    // Walk up to find the container that holds the avatars/names
     let container = mutualElement;
     for (let i = 0; i < 5; i++) {
       if (container.parentElement) container = container.parentElement;
     }
 
-    // Strategy A: img alt attributes (avatar thumbnails of mutual connections)
+    // Strategy A: img alt attributes (avatar thumbnails)
     container.querySelectorAll('img[alt]').forEach((img) => {
       const alt = img.alt?.trim();
       if (
@@ -468,22 +492,21 @@ function extractMutualConnections() {
         !alt.toLowerCase().includes('linkedin') &&
         !alt.toLowerCase().includes('photo of') &&
         !alt.toLowerCase().includes('company logo') &&
-        !/mutual\s+connection/i.test(alt) &&
+        !mutualTestPattern.test(alt) &&
         !/^\d+$/.test(alt)
       ) {
         result.names.push(alt);
       }
     });
 
-    // Strategy B: aria-label attributes on links (often contain full names)
+    // Strategy B: aria-label on links (full names)
     container.querySelectorAll('a[aria-label]').forEach((a) => {
       const label = a.getAttribute('aria-label')?.trim();
       if (
         label &&
         label.length > 1 &&
         label.length < 80 &&
-        !/mutual/i.test(label) &&
-        !/connection/i.test(label) &&
+        !mutualTestPattern.test(label) &&
         !/message/i.test(label) &&
         !/follow/i.test(label)
       ) {

@@ -289,7 +289,6 @@ function displayMessagesInPanel(_container, messages) {
     useBtn.textContent = 'Insert in Chat';
     useBtn.addEventListener('click', () => {
       insertMessage(msg.text);
-      closeModal();
     });
 
     actions.appendChild(copyBtn);
@@ -359,6 +358,46 @@ function displayMessagesInPanel(_container, messages) {
   modal.appendChild(body);
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
+
+  // Drag support via header
+  let isDragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+
+  header.style.cursor = 'grab';
+
+  header.addEventListener('mousedown', (e) => {
+    // Ignore clicks on buttons inside the header
+    if (e.target.closest('button')) return;
+    isDragging = true;
+    header.style.cursor = 'grabbing';
+
+    // Switch modal from flex-centered to absolute positioning on first drag
+    if (!modal.style.position || modal.style.position !== 'absolute') {
+      const rect = modal.getBoundingClientRect();
+      modal.style.position = 'absolute';
+      modal.style.left = rect.left + 'px';
+      modal.style.top = rect.top + 'px';
+      modal.style.margin = '0';
+    }
+
+    dragOffsetX = e.clientX - modal.getBoundingClientRect().left;
+    dragOffsetY = e.clientY - modal.getBoundingClientRect().top;
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    modal.style.left = (e.clientX - dragOffsetX) + 'px';
+    modal.style.top = (e.clientY - dragOffsetY) + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      header.style.cursor = 'grab';
+    }
+  });
 
   // Animate in
   requestAnimationFrame(() => overlay.classList.add('lmh-modal-visible'));

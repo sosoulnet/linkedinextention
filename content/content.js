@@ -21,6 +21,7 @@ async function loadTones() {
 // ── State ──────────────────────────────────────────────────────────
 let panelOpen = false;
 let profileData = null;
+let lastPrompts = null; // { system, user } — stored for QA inspection
 
 // ── Inject UI on load ──────────────────────────────────────────────
 createFloatingButton();
@@ -241,7 +242,10 @@ function displayMessagesInPanel(_container, messages) {
   header.className = 'lmh-modal-header';
   header.innerHTML = `
     <span class="lmh-modal-title">Choose a Message</span>
-    <button class="lmh-modal-close">&times;</button>
+    <div class="lmh-modal-header-actions">
+      <button class="lmh-qa-btn" title="Show the prompt sent to the AI">QA</button>
+      <button class="lmh-modal-close">&times;</button>
+    </div>
   `;
   modal.appendChild(header);
 
@@ -293,12 +297,38 @@ function displayMessagesInPanel(_container, messages) {
     body.appendChild(card);
   });
 
+  // QA prompt viewer (hidden by default)
+  const qaPanel = document.createElement('div');
+  qaPanel.className = 'lmh-qa-panel lmh-hidden';
+  if (lastPrompts) {
+    qaPanel.innerHTML = `
+      <div class="lmh-qa-section">
+        <div class="lmh-qa-label">System Prompt</div>
+        <pre class="lmh-qa-pre">${escapeHTML(lastPrompts.system)}</pre>
+      </div>
+      <div class="lmh-qa-section">
+        <div class="lmh-qa-label">User Prompt</div>
+        <pre class="lmh-qa-pre">${escapeHTML(lastPrompts.user)}</pre>
+      </div>
+    `;
+  }
+
+  modal.appendChild(qaPanel);
   modal.appendChild(body);
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
 
   // Animate in
   requestAnimationFrame(() => overlay.classList.add('lmh-modal-visible'));
+
+  // QA toggle
+  const qaBtn = header.querySelector('.lmh-qa-btn');
+  qaBtn.addEventListener('click', () => {
+    const isVisible = !qaPanel.classList.contains('lmh-hidden');
+    qaPanel.classList.toggle('lmh-hidden');
+    body.classList.toggle('lmh-hidden');
+    qaBtn.classList.toggle('lmh-qa-btn-active', !isVisible);
+  });
 
   // Close handlers
   function closeModal() {
@@ -513,6 +543,9 @@ Respond in this exact JSON format only, with no other text:
   const systemPrompt = userBackground
     ? `${SYSTEM_PROMPT} The sender has provided their background: "${userBackground}". Incorporate this naturally into the messages — the outreach should clearly relate to the sender's role, industry, or goals.`
     : SYSTEM_PROMPT;
+
+  // Store prompts for QA inspection
+  lastPrompts = { system: systemPrompt, user: userPrompt };
 
   const defaultModel = apiProvider === 'openai' ? 'gpt-5.2' : 'claude-sonnet-4-20250514';
   const model = aiModel || defaultModel;

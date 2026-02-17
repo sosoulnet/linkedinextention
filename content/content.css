@@ -332,6 +332,37 @@
   font-weight: 600;
 }
 
+.lmh-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lmh-qa-btn {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 3px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  letter-spacing: 0.5px;
+}
+
+.lmh-qa-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.lmh-qa-btn.lmh-qa-btn-active {
+  background: white;
+  color: #0a66c2;
+  border-color: white;
+}
+
 .lmh-modal-close {
   background: none;
   border: none;
@@ -426,6 +457,46 @@
   background: #057642;
   color: white;
   border-color: #057642;
+}
+
+/* ── QA prompt viewer ──────────────────────────────────────────── */
+.lmh-qa-panel {
+  padding: 16px 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lmh-qa-section {
+  background: white;
+  border: 1px solid #e0dfdc;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.lmh-qa-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #0a66c2;
+  padding: 8px 14px;
+  background: #e8f0fe;
+  border-bottom: 1px solid #e0dfdc;
+}
+
+.lmh-qa-pre {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1d2226;
+  padding: 12px 14px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Consolas', monospace;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 /* ── Notification toast ─────────────────────────────────────────── */

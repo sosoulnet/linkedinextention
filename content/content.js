@@ -1042,11 +1042,11 @@ async function scrapeFullMutualConnections() {
   const PAGE_SIZE = 49;
   const names = new Set();
   let start = 0;
-  let totalFetched = 0;
+  let totalAvailable = Infinity; // will be set from API paging metadata
   debug.pages = 0;
 
   try {
-    while (true) {
+    while (start < totalAvailable) {
       const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
         + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
         + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
@@ -1071,7 +1071,6 @@ async function scrapeFullMutualConnections() {
         debug.step = 'api-error';
         const errText = await resp.text();
         debug.errorBody = errText.slice(0, 1000);
-        // Return whatever we've collected so far
         if (names.size > 0) break;
         return { names: null, debug };
       }
@@ -1080,32 +1079,38 @@ async function scrapeFullMutualConnections() {
       debug.hasIncluded = Array.isArray(data.included);
       debug.pages++;
 
+      // Extract total from paging metadata (first page)
+      // LinkedIn returns paging info inside data.data.paging or inside
+      // the included elements or inside cluster paging objects.
+      if (totalAvailable === Infinity) {
+        totalAvailable = extractPagingTotal(data) || Infinity;
+        debug.totalAvailable = totalAvailable;
+      }
+
       const prevSize = names.size;
 
-      // Extract names from this page using all strategies
+      // Extract names from this page
       extractNamesFromResponse(data, names);
 
       const newNames = names.size - prevSize;
-      totalFetched += data.included?.length || 0;
+      debug[`page${debug.pages}_new`] = newNames;
 
-      // Stop paginating if: no new names found, or fewer results than page size
-      if (newNames === 0 || (data.included && data.included.length < PAGE_SIZE)) break;
+      // If no new names found on this page, we've exhausted results
+      if (newNames === 0) break;
 
       start += PAGE_SIZE;
 
-      // Safety cap: don't make more than 20 requests
+      // Safety cap: don't make more than 20 requests (~980 connections)
       if (debug.pages >= 20) break;
     }
 
     debug.step = 'done';
     debug.namesFound = names.size;
-    debug.includedCount = totalFetched;
 
     return { names: names.size > 0 ? [...names] : null, debug };
   } catch (e) {
     debug.step = 'error';
     debug.error = e.message;
-    // Return partial results if we got some before error
     if (names.size > 0) {
       debug.namesFound = names.size;
       return { names: [...names], debug };
@@ -1114,8 +1119,30 @@ async function scrapeFullMutualConnections() {
   }
 }
 
+/** Try to extract total result count from LinkedIn Voyager paging metadata. */
+function extractPagingTotal(data) {
+  // Method 1: data.data.paging.total
+  if (data?.data?.paging?.total) return data.data.paging.total;
+
+  // Method 2: Look in included[] for paging objects
+  if (Array.isArray(data.included)) {
+    for (const item of data.included) {
+      if (item.paging?.total) return item.paging.total;
+    }
+  }
+
+  // Method 3: Regex search for "total":NNN in the JSON
+  const jsonStr = JSON.stringify(data);
+  const match = jsonStr.match(/"total"\s*:\s*(\d+)/);
+  if (match) return parseInt(match[1], 10);
+
+  return null;
+}
+
 /** Extract names from a single Voyager API response page into the names Set. */
 function extractNamesFromResponse(data, names) {
+  const before = names.size;
+
   // Strategy 1: included[] profiles with firstName + lastName
   if (Array.isArray(data.included)) {
     for (const item of data.included) {
@@ -1125,12 +1152,12 @@ function extractNamesFromResponse(data, names) {
     }
   }
 
-  if (names.size > 0) return;
+  // If strategy 1 found names on this page, we're done
+  if (names.size > before) return;
 
   // Strategy 2: Walk JSON tree for title.text patterns
   collectNamesFromJSON(data, names);
-
-  if (names.size > 0) return;
+  if (names.size > before) return;
 
   // Strategy 3: Regex on stringified JSON for firstName/lastName
   const jsonStr = JSON.stringify(data);

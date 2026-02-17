@@ -859,12 +859,14 @@ async function sendLinkedInMessage(recipientName, messageText) {
   if (!memberId) throw new Error('Could not find profile for: ' + recipientName);
   console.log(`[LMH] Resolved memberId="${memberId}" for "${recipientName}"`);
 
-  // 2. Send the message — try legacy conversations endpoint first (most reliable)
+  // 2. Send the message
+  //    LinkedIn Voyager uses "attributedBody" (not "body") and
+  //    recipients can be raw member IDs or urn:li:fs_miniProfile:ID
   const errors = [];
 
-  // 2a. Legacy messaging API
+  // 2a. Legacy messaging API — raw member ID as recipient
   try {
-    console.log('[LMH] Trying legacy /messaging/conversations …');
+    console.log(`[LMH] Trying legacy /messaging/conversations (memberId=${memberId})…`);
     const legacyResp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations', {
       method: 'POST',
       headers: {
@@ -880,7 +882,10 @@ async function sendLinkedInMessage(recipientName, messageText) {
           eventCreate: {
             value: {
               'com.linkedin.voyager.messaging.create.MessageCreate': {
-                body: messageText,
+                attributedBody: {
+                  text: messageText,
+                  attributes: [],
+                },
                 attachments: [],
               },
             },
@@ -896,14 +901,59 @@ async function sendLinkedInMessage(recipientName, messageText) {
       return;
     }
     const errText = await legacyResp.text();
-    errors.push(`legacy ${legacyResp.status}: ${errText.slice(0, 300)}`);
-    console.warn(`[LMH] Legacy API failed: ${legacyResp.status}`, errText.slice(0, 300));
+    errors.push(`legacy(raw) ${legacyResp.status}: ${errText.slice(0, 300)}`);
+    console.warn(`[LMH] Legacy API failed:`, legacyResp.status, errText.slice(0, 300));
   } catch (e) {
-    errors.push(`legacy error: ${e.message}`);
+    errors.push(`legacy(raw) error: ${e.message}`);
     console.warn('[LMH] Legacy API error:', e);
   }
 
-  // 2b. Dash messaging API
+  // 2b. Legacy messaging API — with urn:li:fs_miniProfile: prefix
+  try {
+    const miniProfileUrn = `urn:li:fs_miniProfile:${memberId}`;
+    console.log(`[LMH] Trying legacy with miniProfile URN: ${miniProfileUrn}…`);
+    const legacyResp2 = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations', {
+      method: 'POST',
+      headers: {
+        'csrf-token': csrfToken,
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        'content-type': 'application/json; charset=UTF-8',
+        'x-restli-protocol-version': '2.0.0',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        keyVersion: 'LEGACY_INBOX',
+        conversationCreate: {
+          eventCreate: {
+            value: {
+              'com.linkedin.voyager.messaging.create.MessageCreate': {
+                attributedBody: {
+                  text: messageText,
+                  attributes: [],
+                },
+                attachments: [],
+              },
+            },
+          },
+          recipients: [miniProfileUrn],
+          subtype: 'MEMBER_TO_MEMBER',
+        },
+      }),
+    });
+
+    if (legacyResp2.ok || legacyResp2.status === 201) {
+      console.log('[LMH] Message sent via legacy API (miniProfile)!');
+      return;
+    }
+    const errText = await legacyResp2.text();
+    errors.push(`legacy(miniProfile) ${legacyResp2.status}: ${errText.slice(0, 300)}`);
+    console.warn(`[LMH] Legacy miniProfile failed:`, legacyResp2.status, errText.slice(0, 300));
+  } catch (e) {
+    errors.push(`legacy(miniProfile) error: ${e.message}`);
+    console.warn('[LMH] Legacy miniProfile error:', e);
+  }
+
+  // 2c. Dash messaging API
   try {
     console.log('[LMH] Trying dash messaging API …');
     const dashResp = await fetch('https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage', {
@@ -931,7 +981,7 @@ async function sendLinkedInMessage(recipientName, messageText) {
     }
     const errText = await dashResp.text();
     errors.push(`dash ${dashResp.status}: ${errText.slice(0, 300)}`);
-    console.warn(`[LMH] Dash API failed: ${dashResp.status}`, errText.slice(0, 300));
+    console.warn(`[LMH] Dash API failed:`, dashResp.status, errText.slice(0, 300));
   } catch (e) {
     errors.push(`dash error: ${e.message}`);
     console.warn('[LMH] Dash API error:', e);

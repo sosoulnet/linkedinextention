@@ -458,100 +458,68 @@ function extractProfileData() {
 
 function extractMutualConnections() {
   const result = { count: 0, names: [] };
-  const mutualTestPattern = /(?:mutual|shared)\s+connection/i;
 
-  // ── 1. Find the element that contains "mutual connection" text ────
-  let mutualElement = null;
+  // LinkedIn format: "Roi Sagiv, Elik Rozenboim, and 377 other mutual connections"
+  // or simply: "42 mutual connections"
+  // Find the best text containing "mutual connection(s)".
+  let mutualText = '';
 
   for (const el of document.querySelectorAll('*')) {
-    const text = el.textContent?.trim() || '';
-    // Only match small elements to avoid huge parent containers
-    if (text.length < 200 && mutualTestPattern.test(text)) {
-      mutualElement = el;
-      break;
-    }
-  }
-
-  if (!mutualElement) return result;
-
-  // ── 2. Extract count ──────────────────────────────────────────────
-  // LinkedIn splits "32" and "mutual connections" into separate child
-  // elements. textContent may concatenate them without spaces, and
-  // innerText may add proper spacing. Try both, walking up parents.
-  const countRegexes = [
-    /(\d+)\s+(?:mutual|shared)\s+connection/i,   // "32 mutual connections"
-    /(\d+)\s*(?:mutual|shared)\s*connection/i,    // "32mutual connections" (no space)
-    /(\d+)[^\d]{0,10}(?:mutual|shared)/i,         // "32\nmutual" or "32 - mutual"
-  ];
-
-  let countSource = mutualElement;
-  for (let i = 0; i < 4 && countSource && result.count === 0; i++) {
-    // Try innerText first (renders like the user sees), then textContent
-    for (const textValue of [countSource.innerText, countSource.textContent]) {
-      const text = textValue?.trim() || '';
-      if (text.length > 500) continue; // skip huge containers
-      for (const regex of countRegexes) {
-        const countMatch = text.match(regex);
-        if (countMatch) {
-          result.count = parseInt(countMatch[1], 10);
-          break;
-        }
+    const text = (el.innerText || el.textContent || '').trim();
+    if (text.length > 0 && text.length < 300 && /mutual\s+connection/i.test(text)) {
+      // Prefer elements that also contain a number (the full line)
+      if (/\d/.test(text)) {
+        mutualText = text;
+        break;
       }
-      if (result.count > 0) break;
+      // Save as fallback if no number found yet
+      if (!mutualText) mutualText = text;
     }
-    countSource = countSource.parentElement;
   }
 
-  // ── 3. Extract mutual connection names ────────────────────────────
-  // Walk up only 2 levels from the mutual element — just enough to
-  // reach the container with avatars, not the whole profile header.
-  let container = mutualElement;
-  for (let i = 0; i < 2; i++) {
-    if (container.parentElement) container = container.parentElement;
+  if (!mutualText) return result;
+
+  // If we only found text without a number, walk up to find the full line
+  if (!/\d/.test(mutualText)) {
+    for (const el of document.querySelectorAll('*')) {
+      const text = (el.innerText || el.textContent || '').trim();
+      if (text.length < 500 && /\d/.test(text) && /mutual\s+connection/i.test(text)) {
+        mutualText = text;
+        break;
+      }
+    }
   }
 
-  // Filter function: does this string look like a real person's name?
-  function isPersonName(str) {
-    if (!str || str.length < 3 || str.length > 60) return false;
-    // Must have at least 2 words (first + last name)
-    if (str.split(/\s+/).length < 2) return false;
-    // Reject obvious non-names
-    const lower = str.toLowerCase();
-    const rejectPatterns = [
-      'photo', 'image', 'logo', 'linkedin', 'graphic',
-      'alternative', 'description', 'view', 'like',
-      'follow', 'message', 'connect', 'pending', 'connection',
-      'mutual', 'shared', 'profile',
-    ];
-    return !rejectPatterns.some((p) => lower.includes(p));
+  // ── Extract count and names ───────────────────────────────────────
+  // Pattern A: "Name1, Name2, and 377 other mutual connections"
+  const otherMatch = mutualText.match(/^(.+?),?\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
+  if (otherMatch) {
+    const namesPart = otherMatch[1];
+    const otherCount = parseInt(otherMatch[2], 10);
+    const names = namesPart.split(/,\s*/).map((n) => n.trim()).filter((n) => n.length > 1);
+    result.names.push(...names);
+    result.count = otherCount + names.length;
+    result.names = [...new Set(result.names)].slice(0, 5);
+    return result;
   }
 
-  // Strategy A: img alt attributes (avatar thumbnails near mutual section)
-  container.querySelectorAll('img[alt]').forEach((img) => {
-    const alt = img.alt?.trim();
-    if (isPersonName(alt)) {
-      result.names.push(alt);
-    }
-  });
+  // Pattern B: "Name and 52 other mutual connections"
+  const singleMatch = mutualText.match(/^(.+?)\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
+  if (singleMatch) {
+    const name = singleMatch[1].trim();
+    const otherCount = parseInt(singleMatch[2], 10);
+    if (name.length > 1) result.names.push(name);
+    result.count = otherCount + result.names.length;
+    result.names = [...new Set(result.names)].slice(0, 5);
+    return result;
+  }
 
-  // Strategy B: aria-label on links
-  container.querySelectorAll('a[aria-label]').forEach((a) => {
-    const label = a.getAttribute('aria-label')?.trim();
-    if (isPersonName(label)) {
-      result.names.push(label);
-    }
-  });
-
-  // Strategy C: title attributes on links
-  container.querySelectorAll('a[title]').forEach((a) => {
-    const title = a.getAttribute('title')?.trim();
-    if (isPersonName(title)) {
-      result.names.push(title);
-    }
-  });
-
-  // Deduplicate, clean, and limit
-  result.names = [...new Set(result.names)].slice(0, 5);
+  // Pattern C: "42 mutual connections" (no names listed)
+  const directMatch = mutualText.match(/(\d+)\s+mutual\s+connection/i);
+  if (directMatch) {
+    result.count = parseInt(directMatch[1], 10);
+    return result;
+  }
 
   return result;
 }

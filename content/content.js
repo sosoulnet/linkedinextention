@@ -1049,28 +1049,84 @@ async function scrapeFullMutualConnections(onProgress) {
 
   // 4. Call LinkedIn Voyager search API with pagination to get ALL results.
   //
-  // LinkedIn's normalized JSON includes a flat `included[]` entity store.
-  // Profiles across pages overlap heavily (only ~1 new per page via Set dedup).
-  // So we paginate based on the paging total, not on "new names found".
+  // The dash API query format is undocumented — the parameter names and URN
+  // format vary between LinkedIn versions.  We probe several variations
+  // with count=1, compare the returned paging.total to the expected mutual
+  // connection count, and pick the best match.
   const PAGE_SIZE = 49;
   const names = new Set();
   let start = 0;
   let pagingTotal = 0;
   debug.pages = 0;
 
+  // Extract raw ID (without urn: prefix) for variations that need it
+  const rawId = profileUrn.replace(/^urn:li:fsd_profile:/, '');
+  const encodedUrn = encodeURIComponent(profileUrn);
+  const expectedCount = profileData?.mutualConnections?.count || 0;
+
+  // Probe multiple query parameter variations to find the one that
+  // actually filters to mutual connections (paging total ≈ expected count).
+  const baseUrl = 'https://www.linkedin.com/voyager/api/search/dash/clusters'
+    + '?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175'
+    + '&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all';
+  const queryVariations = [
+    { label: 'facet+rawId',      qp: `facetConnectionOf:List(${rawId}),facetNetwork:List(F),resultType:List(PEOPLE)` },
+    { label: 'facet+urn',        qp: `facetConnectionOf:List(${encodedUrn}),facetNetwork:List(F),resultType:List(PEOPLE)` },
+    { label: 'noFacet+rawId',    qp: `connectionOf:List(${rawId}),network:List(F),resultType:List(PEOPLE)` },
+    { label: 'noFacet+urn',      qp: `connectionOf:List(${encodedUrn}),network:List(F),resultType:List(PEOPLE)` },
+  ];
+
+  let bestVariation = queryVariations[0]; // fallback
+  try {
+    console.log(`[LMH] Probing ${queryVariations.length} query variations (expected ~${expectedCount} mutual connections)…`);
+    const probeResults = await Promise.all(queryVariations.map(async (v) => {
+      const url = `${baseUrl}&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:(${v.qp}))&count=1&start=0`;
+      try {
+        const r = await fetch(url, {
+          headers: { 'csrf-token': csrfToken, 'accept': 'application/vnd.linkedin.normalized+json+2.1', 'x-restli-protocol-version': '2.0.0' },
+          credentials: 'include',
+        });
+        if (!r.ok) return { ...v, total: -1, status: r.status };
+        const d = await r.json();
+        const total = d.data?.paging?.total ?? d.paging?.total ?? -1;
+        return { ...v, total, status: r.status };
+      } catch (e) {
+        return { ...v, total: -1, error: e.message };
+      }
+    }));
+    for (const pr of probeResults) {
+      console.log(`[LMH]   ${pr.label}: total=${pr.total} (status=${pr.status})`);
+    }
+    debug.probeResults = probeResults.map(p => ({ label: p.label, total: p.total }));
+
+    // Pick the variation whose total is closest to expectedCount (and > 0)
+    if (expectedCount > 0) {
+      let bestDiff = Infinity;
+      for (const pr of probeResults) {
+        if (pr.total <= 0) continue;
+        const diff = Math.abs(pr.total - expectedCount);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestVariation = pr;
+        }
+      }
+    }
+    console.log(`[LMH] Best variation: ${bestVariation.label} (total=${bestVariation.total})`);
+  } catch (probeErr) {
+    console.warn('[LMH] Probe failed, using default variation:', probeErr);
+  }
+
   try {
     do {
-      // URL-encode the URN (colons → %3A) so the RESTLI query parser
-      // recognises it as a single token inside List(…)
-      const encodedUrn = encodeURIComponent(profileUrn);
-      const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
-        + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
-        + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
-        + `&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:`
-        + `(facetConnectionOf:List(${encodedUrn}),facetNetwork:List(F),resultType:List(PEOPLE)))`
+      const apiUrl = `${baseUrl}`
+        + `&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:(${bestVariation.qp}))`
         + `&count=${PAGE_SIZE}&start=${start}`;
 
-      if (start === 0) debug.apiUrl = apiUrl;
+      if (start === 0) {
+        debug.apiUrl = apiUrl;
+        debug.queryVariation = bestVariation.label;
+        console.log('[LMH] API URL:', apiUrl);
+      }
 
       console.log(`[LMH] Fetching page ${debug.pages + 1}, start=${start}, names so far=${names.size}`);
       if (onProgress) onProgress(names.size, debug.pages + 1);

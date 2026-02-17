@@ -87,6 +87,35 @@ async function openPanel() {
 
   // Animate in
   requestAnimationFrame(() => panel.classList.add('lmh-panel-visible'));
+
+  // Background: open the mutual-connections modal, scrape the full list,
+  // then update profileData so it's ready when the user clicks Generate.
+  if (profileData.mutualConnections?.count > 0) {
+    const mutualEl = panel.querySelector('.lmh-profile-mutual');
+    if (mutualEl) {
+      mutualEl.textContent += ' (loading full list…)';
+    }
+
+    scrapeFullMutualConnections().then((fullNames) => {
+      if (fullNames && fullNames.length > 0) {
+        profileData.mutualConnections.names = fullNames;
+        // Update the UI card
+        const el = document.querySelector('#lmh-panel .lmh-profile-mutual');
+        if (el) {
+          const count = profileData.mutualConnections.count;
+          el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}: ${fullNames.join(', ')}`;
+        }
+      } else {
+        // Remove loading indicator if scraping failed
+        const el = document.querySelector('#lmh-panel .lmh-profile-mutual');
+        if (el) {
+          const count = profileData.mutualConnections.count;
+          const existingNames = profileData.mutualConnections.names;
+          el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}${existingNames.length > 0 ? ': ' + existingNames.join(', ') : ''}`;
+        }
+      }
+    });
+  }
 }
 
 function closePanel() {
@@ -512,6 +541,88 @@ function extractMutualConnections() {
   return result;
 }
 
+// ── Full mutual-connections scraping (opens the LinkedIn modal) ────
+async function scrapeFullMutualConnections() {
+  // Find the <a> that contains "mutual connection" text
+  const link = [...document.querySelectorAll('a')].find((a) =>
+    /mutual\s+connection/i.test(a.textContent)
+  );
+  if (!link) return null;
+
+  // Click the link to open the LinkedIn modal
+  link.click();
+
+  // Wait for modal / dialog to appear
+  const modal = await waitForElement('[role="dialog"], .artdeco-modal', 4000);
+  if (!modal) return null;
+
+  // Wait for the list content to populate
+  await sleep(1500);
+
+  // Scroll the modal list several times to load more names
+  const scrollContainer =
+    modal.querySelector('.artdeco-modal__content') ||
+    modal.querySelector('.scaffold-finite-scroll__content') ||
+    modal.querySelector('[class*="scroll"]') ||
+    modal;
+
+  for (let i = 0; i < 5; i++) {
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    await sleep(800);
+  }
+
+  // Scrape names using multiple selector strategies
+  const names = new Set();
+
+  // Strategy 1: entity result title text (search-style list)
+  modal
+    .querySelectorAll('.entity-result__title-text span[aria-hidden="true"]')
+    .forEach((el) => {
+      const n = el.textContent.trim();
+      if (n.length > 1) names.add(n);
+    });
+
+  // Strategy 2: artdeco entity lockup titles
+  if (names.size === 0) {
+    modal
+      .querySelectorAll('.artdeco-entity-lockup__title span[aria-hidden="true"]')
+      .forEach((el) => {
+        const n = el.textContent.trim();
+        if (n.length > 1) names.add(n);
+      });
+  }
+
+  // Strategy 3: connection card names
+  if (names.size === 0) {
+    modal.querySelectorAll('.mn-connection-card__name').forEach((el) => {
+      const n = el.textContent.trim();
+      if (n.length > 1) names.add(n);
+    });
+  }
+
+  // Strategy 4: generic list items with aria-hidden spans
+  if (names.size === 0) {
+    modal.querySelectorAll('li span[aria-hidden="true"]').forEach((el) => {
+      const n = el.textContent.trim();
+      // Name heuristic: starts with uppercase, reasonable length
+      if (n.length > 1 && n.length < 60 && /^[A-Z\u0590-\u05FF]/.test(n)) {
+        names.add(n);
+      }
+    });
+  }
+
+  // Close the modal
+  const closeBtn =
+    modal.querySelector('.artdeco-modal__dismiss') ||
+    modal.querySelector('button[aria-label="Dismiss"]') ||
+    modal.querySelector('.artdeco-button--circle');
+  if (closeBtn) closeBtn.click();
+
+  if (names.size === 0) return null;
+
+  return [...names].slice(0, 30);
+}
+
 // ── Message generation (AI calls) ──────────────────────────────────
 async function generateMessages({ profileData, tones, context, apiKey, apiProvider, aiModel, userBackground, language }) {
   const profileSummary = buildProfileSummary(profileData);
@@ -726,6 +837,33 @@ function showNotification(text) {
     notification.style.opacity = '0';
     setTimeout(() => notification.remove(), 300);
   }, 2500);
+}
+
+// ── Async helpers ──────────────────────────────────────────────────
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForElement(selector, timeout = 3000) {
+  return new Promise((resolve) => {
+    const existing = document.querySelector(selector);
+    if (existing) return resolve(existing);
+
+    const observer = new MutationObserver(() => {
+      const el = document.querySelector(selector);
+      if (el) {
+        observer.disconnect();
+        resolve(el);
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeout);
+  });
 }
 
 // ── Utility ────────────────────────────────────────────────────────

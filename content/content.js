@@ -1197,13 +1197,25 @@ function extractMutualConnections() {
     }
   }
 
+  // Also try "shared connection" / "connection in common" variants
+  if (!mutualLine) {
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/shared\s+connection|connection.*in\s+common/i.test(trimmed)) {
+        mutualLine = trimmed;
+        break;
+      }
+    }
+  }
+
   if (!mutualLine) return result;
 
   // Store the raw line for debugging
   result.rawLine = mutualLine;
+  console.log('[LMH] parseMutualConnections rawLine:', mutualLine);
 
   // Pattern A: "Name1, Name2, and 377 other mutual connections"
-  const multiNameMatch = mutualLine.match(/(.+?),?\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
+  const multiNameMatch = mutualLine.match(/(.+?),?\s+and\s+(\d+)\s+other\s+(mutual\s+connection|shared\s+connection|connection)/i);
   if (multiNameMatch) {
     const namesPart = multiNameMatch[1];
     const otherCount = parseInt(multiNameMatch[2], 10);
@@ -1214,7 +1226,7 @@ function extractMutualConnections() {
   }
 
   // Pattern B: "Name and 52 other mutual connections"
-  const singleNameMatch = mutualLine.match(/(.+?)\s+and\s+(\d+)\s+other\s+mutual\s+connection/i);
+  const singleNameMatch = mutualLine.match(/(.+?)\s+and\s+(\d+)\s+other\s+(mutual\s+connection|shared\s+connection|connection)/i);
   if (singleNameMatch) {
     const name = singleNameMatch[1].trim();
     const otherCount = parseInt(singleNameMatch[2], 10);
@@ -1223,8 +1235,8 @@ function extractMutualConnections() {
     return result;
   }
 
-  // Pattern C: "42 mutual connections" (no names)
-  const directMatch = mutualLine.match(/(\d+)\s+mutual\s+connection/i);
+  // Pattern C: "42 mutual connections" / "42 shared connections" (no names)
+  const directMatch = mutualLine.match(/(\d+)\s+(mutual\s+connection|shared\s+connection|connection.*in\s+common)/i);
   if (directMatch) {
     result.count = parseInt(directMatch[1], 10);
     return result;
@@ -1251,16 +1263,24 @@ async function scrapeFullMutualConnections(onProgress) {
 
   debug.href = link.href;
 
-  // 2. Extract the profile URN from the URL (facetConnectionOf param)
-  const urnMatch = link.href.match(/facetConnectionOf=%22([^%"&]+)%22/)
-    || link.href.match(/facetConnectionOf=([^&"]+)/);
+  // 2. Extract the profile URN from the URL
+  //    LinkedIn has used both facetConnectionOf and connectionOf in different versions
+  debug.href = link.href;
+  const urnMatch =
+       link.href.match(/facetConnectionOf=%22([^%"&]+)%22/)
+    || link.href.match(/connectionOf=%22([^%"&]+)%22/)
+    || link.href.match(/facetConnectionOf=List%28([^)%]+)%29/)
+    || link.href.match(/connectionOf=List%28([^)%]+)%29/)
+    || link.href.match(/facetConnectionOf=([^&"]+)/)
+    || link.href.match(/connectionOf=([^&"]+)/);
 
   if (!urnMatch) {
     debug.step = 'no-urn-in-url';
+    console.log('[LMH] Could not extract URN from mutual connections link:', link.href);
     return { names: null, debug };
   }
 
-  let profileUrn = decodeURIComponent(urnMatch[1]).replace(/"/g, '');
+  let profileUrn = decodeURIComponent(urnMatch[1]).replace(/["%()]/g, '');
   // Ensure we have the full URN — the dash API needs urn:li:fsd_profile: prefix
   if (!profileUrn.startsWith('urn:')) {
     profileUrn = `urn:li:fsd_profile:${profileUrn}`;
@@ -1329,19 +1349,37 @@ async function scrapeFullMutualConnections(onProgress) {
     }
     debug.probeResults = probeResults.map(p => ({ label: p.label, total: p.total }));
 
-    // Pick the variation whose total is closest to expectedCount (and > 0)
+    // Pick the best variation:
+    // - If we know the expected count, pick the one closest to it
+    // - Otherwise, pick the one with the SMALLEST positive total, since
+    //   mutual connections are almost always fewer than total connections.
+    //   A variation returning a huge total likely isn't filtering properly.
+    const validProbes = probeResults.filter(p => p.total > 0);
     if (expectedCount > 0) {
       let bestDiff = Infinity;
-      for (const pr of probeResults) {
-        if (pr.total <= 0) continue;
+      for (const pr of validProbes) {
         const diff = Math.abs(pr.total - expectedCount);
         if (diff < bestDiff) {
           bestDiff = diff;
           bestVariation = pr;
         }
       }
+    } else if (validProbes.length > 0) {
+      // No expected count — pick the smallest total (most likely the filtered set)
+      // but only if there's a meaningful difference between variations
+      const sorted = [...validProbes].sort((a, b) => a.total - b.total);
+      const smallest = sorted[0];
+      const largest = sorted[sorted.length - 1];
+      if (largest.total > smallest.total * 2 && smallest.total > 0) {
+        // Clear difference: the smaller one is likely the filtered (mutual) set
+        bestVariation = smallest;
+        console.log(`[LMH] No expectedCount — picking smallest total: ${smallest.label} (${smallest.total}) vs largest ${largest.total}`);
+      } else {
+        // All similar — pick the first one with the smallest total
+        bestVariation = smallest;
+      }
     }
-    console.log(`[LMH] Best variation: ${bestVariation.label} (total=${bestVariation.total})`);
+    console.log(`[LMH] Best variation: ${bestVariation.label} (total=${bestVariation.total}, expectedCount=${expectedCount})`);
   } catch (probeErr) {
     console.warn('[LMH] Probe failed, using default variation:', probeErr);
   }

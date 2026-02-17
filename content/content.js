@@ -584,7 +584,8 @@ async function openMutualFriendsModal() {
 
   // Render friend list with checkboxes
   const profileName = profileData.name || 'this person';
-  const defaultMessage = `Hey [friend], I'd love your help with an intro to ${profileName}. I think I can be highly relevant for them.`;
+  const profileUrl = window.location.href.split('?')[0];
+  const defaultMessage = `Hey [friend], I'd love your help with an intro to ${profileName}(${profileUrl}). I think Kai can be highly relevant for them.`;
 
   body.innerHTML = `
     <div class="lmh-mutual-toolbar">

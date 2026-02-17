@@ -151,11 +151,6 @@ function buildPanelHTML(profile) {
         </select>
       </div>
 
-      <div class="lmh-section">
-        <div class="lmh-section-label">Context <span class="lmh-optional">(optional)</span></div>
-        <textarea id="lmh-context" class="lmh-textarea" placeholder="e.g. 'I want to discuss a job opportunity' or 'We met at a conference'..." rows="2"></textarea>
-      </div>
-
       <button id="lmh-generate-btn" class="lmh-generate-btn">Generate Messages</button>
 
       <div id="lmh-loading" class="lmh-loading lmh-hidden">
@@ -183,7 +178,6 @@ function bindPanelEvents(panel) {
       return;
     }
 
-    const context = panel.querySelector('#lmh-context').value.trim();
     const language = panel.querySelector('#lmh-language').value;
 
     // Get API settings
@@ -211,7 +205,6 @@ function bindPanelEvents(panel) {
       const messages = await generateMessages({
         profileData,
         tones: selectedTones,
-        context,
         apiKey,
         apiProvider: apiProvider || 'openai',
         aiModel: aiModel || '',
@@ -697,7 +690,7 @@ function isSearchResultName(text) {
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────
-async function generateMessages({ profileData, tones, context, apiKey, apiProvider, aiModel, userBackground, language }) {
+async function generateMessages({ profileData, tones, apiKey, apiProvider, aiModel, userBackground, language }) {
   const profileSummary = buildProfileSummary(profileData);
 
   // Build a lookup from active tones
@@ -711,7 +704,6 @@ async function generateMessages({ profileData, tones, context, apiKey, apiProvid
   const userPrompt = `Here is the LinkedIn profile of the person I want to message:
 
 ${profileSummary}
-${context ? `\nAdditional context: ${context}\n` : ''}
 
 Please generate exactly ${tones.length} message option(s), one for each of these tones:
 ${toneInstructions}

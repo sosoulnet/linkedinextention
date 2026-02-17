@@ -827,17 +827,28 @@ function sendViaPageContext(recipientId, fsdId, messageText, csrfToken) {
       try {
         var csrf = document.cookie.match(/JSESSIONID="?([^";]+)"?/);
         csrf = csrf ? csrf[1] : ${JSON.stringify(csrfToken)};
+        var liTrack = JSON.stringify({
+          clientVersion:'1.13.8031',mpVersion:'1.13.8031',osName:'web',
+          timezoneOffset:new Date().getTimezoneOffset(),
+          timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'Etc/UTC',
+          deviceFormFactor:'DESKTOP',mpName:'voyager-web'
+        });
         var hdrs = {
           'csrf-token': csrf,
           'accept': 'application/vnd.linkedin.normalized+json+2.1',
           'content-type': 'application/json; charset=UTF-8',
-          'x-restli-protocol-version': '2.0.0'
+          'x-restli-protocol-version': '2.0.0',
+          'x-li-lang': 'en_US',
+          'x-li-track': liTrack
         };
         var msg = ${JSON.stringify(messageText)};
         var mc = {body:msg, attributedBody:{text:msg,attributes:[]}, attachments:[]};
         var ev = {eventCreate:{value:{'com.linkedin.voyager.messaging.create.MessageCreate':mc}}};
 
         var strategies = [
+          ['memberUrn',
+           '/voyager/api/messaging/conversations?action=create',
+           JSON.stringify({keyVersion:'LEGACY_INBOX',conversationCreate:{...ev,recipients:['urn:li:member:'+${JSON.stringify(recipientId)}],subtype:'MEMBER_TO_MEMBER'}})],
           ['legacy('+${JSON.stringify(recipientId)}+')',
            '/voyager/api/messaging/conversations?action=create',
            JSON.stringify({keyVersion:'LEGACY_INBOX',conversationCreate:{...ev,recipients:[${JSON.stringify(recipientId)}],subtype:'MEMBER_TO_MEMBER'}})],
@@ -851,13 +862,17 @@ function sendViaPageContext(recipientId, fsdId, messageText, csrfToken) {
 
         var errs = [];
         for (var s of strategies) {
-          var resp = await fetch(s[1], {method:'POST',headers:hdrs,credentials:'include',body:s[2]});
-          if (resp.ok || resp.status === 201) {
-            window.postMessage({type:${JSON.stringify(cbId)},ok:true},'*');
-            return;
+          try {
+            var resp = await fetch(s[1], {method:'POST',headers:hdrs,credentials:'include',body:s[2]});
+            if (resp.ok || resp.status === 201) {
+              window.postMessage({type:${JSON.stringify(cbId)},ok:true},'*');
+              return;
+            }
+            var t = await resp.text();
+            errs.push(s[0]+' '+resp.status+': '+t.slice(0,200));
+          } catch(ex) {
+            errs.push(s[0]+' err: '+ex.message);
           }
-          var t = await resp.text();
-          errs.push(s[0]+' '+resp.status+': '+t.slice(0,200));
         }
         window.postMessage({type:${JSON.stringify(cbId)},ok:false,error:errs.join(' | ')},'*');
       } catch(e) {
@@ -865,14 +880,55 @@ function sendViaPageContext(recipientId, fsdId, messageText, csrfToken) {
       }
     })();`;
 
-    // Inject via blob URL to avoid CSP inline-script restrictions
-    const blob = new Blob([scriptCode], { type: 'text/javascript' });
-    const url = URL.createObjectURL(blob);
-    const el = document.createElement('script');
-    el.src = url;
-    document.head.appendChild(el);
-    el.remove();
-    URL.revokeObjectURL(url);
+    // Try multiple injection methods — LinkedIn's CSP may block some
+    let injected = false;
+
+    // Method 1: blob URL (works if CSP allows blob: scripts)
+    try {
+      const blob = new Blob([scriptCode], { type: 'text/javascript' });
+      const url = URL.createObjectURL(blob);
+      const el = document.createElement('script');
+      el.src = url;
+      el.onerror = () => console.warn('[LMH] blob: script blocked by CSP');
+      document.head.appendChild(el);
+      el.remove();
+      URL.revokeObjectURL(url);
+      injected = true;
+    } catch (e) {
+      console.warn('[LMH] blob injection failed:', e);
+    }
+
+    // Method 2: inline script (works if CSP allows unsafe-inline or nonce)
+    if (!injected) {
+      try {
+        const el = document.createElement('script');
+        el.textContent = scriptCode;
+        document.head.appendChild(el);
+        el.remove();
+        injected = true;
+      } catch (e) {
+        console.warn('[LMH] inline injection failed:', e);
+      }
+    }
+
+    // Method 3: chrome.scripting.executeScript via background service worker
+    //           (most reliable — bypasses all CSP restrictions)
+    if (!injected) {
+      try {
+        console.log('[LMH] Trying chrome.scripting.executeScript via background…');
+        chrome.runtime.sendMessage(
+          { type: 'lmh-exec-main-world', code: scriptCode },
+          (resp) => {
+            if (chrome.runtime.lastError) {
+              console.warn('[LMH] Background exec failed:', chrome.runtime.lastError.message);
+            }
+            // Response comes via postMessage from the injected script, not here
+          }
+        );
+      } catch (e) {
+        console.warn('[LMH] Background exec request failed:', e);
+      }
+    }
 
     // Timeout after 20 seconds
     setTimeout(() => {
@@ -1005,11 +1061,25 @@ async function sendLinkedInMessage(recipientName, messageText) {
 
   // 2. Send the message — try multiple strategies
   const errors = [];
+
+  // x-li-track is required client metadata — without it LinkedIn rejects requests
+  const liTrack = JSON.stringify({
+    clientVersion: '1.13.8031',
+    mpVersion: '1.13.8031',
+    osName: 'web',
+    timezoneOffset: new Date().getTimezoneOffset(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Etc/UTC',
+    deviceFormFactor: 'DESKTOP',
+    mpName: 'voyager-web',
+  });
+
   const headers = {
     'csrf-token': csrfToken,
     'accept': 'application/vnd.linkedin.normalized+json+2.1',
     'content-type': 'application/json; charset=UTF-8',
     'x-restli-protocol-version': '2.0.0',
+    'x-li-lang': 'en_US',
+    'x-li-track': liTrack,
   };
 
   // Helper: build the legacy MessageCreate payload
@@ -1056,20 +1126,70 @@ async function sendLinkedInMessage(recipientName, messageText) {
   const legacyUrl = 'https://www.linkedin.com/voyager/api/messaging/conversations?action=create';
   const dashUrl = 'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
 
-  // 2a. Legacy with numeric member ID (if available — most compatible format)
+  // 2a. Try finding an existing conversation and posting to it
+  //     This is more reliable than creating a new conversation.
+  const recipientId = numericMemberId || memberId;
+  try {
+    console.log(`[LMH] Looking for existing conversation with ${recipientId}…`);
+    const convResp = await fetch(
+      `https://www.linkedin.com/voyager/api/messaging/conversations?` +
+      `q=participants&recipients=List(${encodeURIComponent(recipientId)})`,
+      {
+        headers: {
+          'csrf-token': csrfToken,
+          'accept': 'application/vnd.linkedin.normalized+json+2.1',
+          'x-restli-protocol-version': '2.0.0',
+          'x-li-lang': 'en_US',
+          'x-li-track': liTrack,
+        },
+        credentials: 'include',
+      }
+    );
+    if (convResp.ok) {
+      const convData = await convResp.json();
+      const conversations = convData.elements || convData.data?.elements || [];
+      if (conversations.length > 0) {
+        const convId = conversations[0].entityUrn || conversations[0]['*conversation'];
+        const convKey = (convId || '').replace(/^urn:li:fs_conversation:/, '');
+        if (convKey) {
+          console.log(`[LMH] Found existing conversation: ${convKey}`);
+          const eventBody = JSON.stringify({
+            eventCreate: {
+              value: {
+                'com.linkedin.voyager.messaging.create.MessageCreate': {
+                  body: messageText,
+                  attributedBody: { text: messageText, attributes: [] },
+                  attachments: [],
+                },
+              },
+            },
+          });
+          if (await trySend('existing-conv', `https://www.linkedin.com/voyager/api/messaging/conversations/${convKey}/events?action=create`, eventBody)) return;
+        }
+      } else {
+        console.log('[LMH] No existing conversation found');
+      }
+    }
+  } catch (e) {
+    console.warn('[LMH] Existing conversation lookup failed:', e);
+  }
+
+  // 2b. Legacy with urn:li:member:numericId format
+  if (numericMemberId) {
+    if (await trySend('legacy(memberUrn)', legacyUrl, legacyPayload([`urn:li:member:${numericMemberId}`]))) return;
+  }
+
+  // 2c. Legacy with numeric member ID
   if (numericMemberId) {
     if (await trySend('legacy(numericId)', legacyUrl, legacyPayload([numericMemberId]))) return;
   }
 
-  // 2b. Legacy with raw fsd_profile key
-  if (await trySend('legacy(raw)', legacyUrl, legacyPayload([memberId]))) return;
-
-  // 2c. Legacy with miniProfile URN
+  // 2d. Legacy with miniProfile URN
   if (await trySend('legacy(miniProfile)', legacyUrl,
     legacyPayload([`urn:li:fs_miniProfile:${memberId}`]))) return;
 
-  // 2d. Dash API with fsd_profile URN
-  if (await trySend('dash', dashUrl, JSON.stringify({
+  // 2e. Dash API with fsd_profile URN
+  if (await trySend('dash(fsd)', dashUrl, JSON.stringify({
     dedupeByClientGeneratedToken: false,
     message: {
       body: { text: messageText, attributes: [] },
@@ -1078,8 +1198,19 @@ async function sendLinkedInMessage(recipientName, messageText) {
     hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
   }))) return;
 
-  // 2e. Last resort: send from page's main world context
-  //     (goes through LinkedIn's own service workers / fetch interceptors)
+  // 2f. Dash API with member URN
+  if (numericMemberId) {
+    if (await trySend('dash(member)', dashUrl, JSON.stringify({
+      dedupeByClientGeneratedToken: false,
+      message: {
+        body: { text: messageText, attributes: [] },
+        renderContentUnions: [],
+      },
+      hostRecipientUrns: [`urn:li:member:${numericMemberId}`],
+    }))) return;
+  }
+
+  // 2g. Last resort: send from page's main world context via background script
   try {
     console.log('[LMH] Trying send from page context (main world)…');
     const bestRecipient = numericMemberId || memberId;

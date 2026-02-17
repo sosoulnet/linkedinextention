@@ -3,7 +3,7 @@
   "name": "LinkedIn Message Helper",
   "version": "1.0.0",
   "description": "Craft personalized LinkedIn messages using AI. Generate natural, engaging messages based on user profiles.",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["https://www.linkedin.com/*"],
   "action": {
     "default_popup": "popup/popup.html",

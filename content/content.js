@@ -551,104 +551,136 @@ function extractMutualConnections() {
   return result;
 }
 
-// ── Full mutual-connections scraping (fetch in background) ─────────
+// ── Full mutual-connections scraping (LinkedIn Voyager API) ────────
 // Returns { names: string[] | null, debug: object }
 async function scrapeFullMutualConnections() {
-  const debug = { step: 'init', href: null, status: null, htmlLength: 0, codeBlocks: 0, strategy: null, namesFound: 0, error: null };
+  const debug = { step: 'init' };
 
-  // Find the <a> that contains "mutual connection" text and has an href
-  const allLinks = [...document.querySelectorAll('a')];
-  const link = allLinks.find(
+  // 1. Find the mutual connections link to extract the profile URN
+  const link = [...document.querySelectorAll('a')].find(
     (a) => a.href && /mutual\s+connection/i.test(a.textContent)
   );
 
   if (!link?.href) {
     debug.step = 'no-link-found';
-    debug.totalLinks = allLinks.length;
-    // List the first few links that mention "mutual" or "connection" for debugging
-    debug.candidateLinks = allLinks
-      .filter((a) => /mutual|connection/i.test(a.textContent))
-      .slice(0, 5)
-      .map((a) => ({ href: a.href, text: a.textContent.trim().slice(0, 80) }));
     return { names: null, debug };
   }
 
   debug.href = link.href;
-  debug.linkText = link.textContent.trim().slice(0, 100);
-  debug.step = 'fetching';
+
+  // 2. Extract the profile URN from the URL (facetConnectionOf param)
+  const urnMatch = link.href.match(/facetConnectionOf=%22([^%"&]+)%22/)
+    || link.href.match(/facetConnectionOf=([^&"]+)/);
+
+  if (!urnMatch) {
+    debug.step = 'no-urn-in-url';
+    return { names: null, debug };
+  }
+
+  const profileUrn = decodeURIComponent(urnMatch[1]).replace(/"/g, '');
+  debug.profileUrn = profileUrn;
+
+  // 3. Get CSRF token (needed for Voyager API calls)
+  const csrfToken = getCsrfToken();
+  debug.hasCsrfToken = !!csrfToken;
+
+  if (!csrfToken) {
+    debug.step = 'no-csrf-token';
+    debug.cookieNames = document.cookie.split(';').map((c) => c.trim().split('=')[0]);
+    return { names: null, debug };
+  }
+
+  // 4. Call LinkedIn Voyager search API (same request the SPA makes)
+  const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
+    + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
+    + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
+    + `&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:`
+    + `(facetConnectionOf:List(${profileUrn}),facetNetwork:List(F),resultType:List(PEOPLE)))`
+    + `&count=49&start=0`;
+
+  debug.apiUrl = apiUrl;
 
   try {
-    const resp = await fetch(link.href, { credentials: 'include' });
+    const resp = await fetch(apiUrl, {
+      headers: {
+        'csrf-token': csrfToken,
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        'x-restli-protocol-version': '2.0.0',
+      },
+      credentials: 'include',
+    });
+
     debug.status = resp.status;
-    debug.redirected = resp.redirected;
-    debug.finalUrl = resp.url;
 
     if (!resp.ok) {
-      debug.step = 'fetch-failed';
+      debug.step = 'api-error';
+      const errText = await resp.text();
+      debug.errorBody = errText.slice(0, 1000);
       return { names: null, debug };
     }
 
-    const html = await resp.text();
-    debug.htmlLength = html.length;
+    const data = await resp.json();
     debug.step = 'parsing';
+    debug.hasIncluded = Array.isArray(data.included);
+    debug.includedCount = data.included?.length || 0;
 
     const names = new Set();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
 
-    // Strategy 1: Parse embedded JSON inside <code> blocks
-    const codeEls = doc.querySelectorAll('code');
-    debug.codeBlocks = codeEls.length;
-
-    codeEls.forEach((codeEl) => {
-      try {
-        const json = JSON.parse(codeEl.textContent);
-        collectNamesFromJSON(json, names);
-      } catch (_) { /* not valid JSON, skip */ }
-    });
+    // Strategy 1: included[] profiles with firstName + lastName
+    if (Array.isArray(data.included)) {
+      for (const item of data.included) {
+        if (item.firstName && item.lastName) {
+          names.add(`${item.firstName} ${item.lastName}`);
+        }
+      }
+    }
 
     if (names.size > 0) {
-      debug.strategy = 'code-json';
+      debug.strategy = 'included-firstLast';
     }
 
-    // Strategy 2: aria-hidden spans in rendered HTML
+    // Strategy 2: Walk JSON tree for title.text patterns
     if (names.size === 0) {
-      const ariaSpans = doc.querySelectorAll('span[aria-hidden="true"]');
-      debug.ariaHiddenSpans = ariaSpans.length;
-      ariaSpans.forEach((span) => {
-        const text = span.textContent.trim();
-        if (isLikelyPersonName(text)) names.add(text);
-      });
-      if (names.size > 0) debug.strategy = 'aria-hidden';
+      collectNamesFromJSON(data, names);
+      if (names.size > 0) debug.strategy = 'title-text';
     }
 
-    // Strategy 3: regex on raw HTML for "title":{"text":"..."} patterns
+    // Strategy 3: Regex on stringified JSON for firstName/lastName
     if (names.size === 0) {
-      const re = /"title"\s*:\s*\{\s*"text"\s*:\s*"([^"]{2,60})"/g;
+      const jsonStr = JSON.stringify(data);
+      const re = /"firstName":"([^"]+)","lastName":"([^"]+)"/g;
       let m;
-      while ((m = re.exec(html)) !== null) {
-        const text = m[1].trim();
-        if (isLikelyPersonName(text)) names.add(text);
+      while ((m = re.exec(jsonStr)) !== null) {
+        names.add(`${m[1]} ${m[2]}`);
       }
-      if (names.size > 0) debug.strategy = 'regex-title';
+      if (names.size > 0) debug.strategy = 'regex-firstLast';
     }
 
-    // Strategy 4: look for any text that looks like a name in the HTML
     if (names.size === 0) {
       debug.strategy = 'none-matched';
-      // Save a snippet of the HTML for debugging
-      debug.htmlSnippet = html.slice(0, 2000);
+      debug.jsonSnippet = JSON.stringify(data).slice(0, 3000);
     }
 
     debug.namesFound = names.size;
     debug.step = 'done';
 
-    return { names: names.size > 0 ? [...names].slice(0, 30) : null, debug };
+    return { names: names.size > 0 ? [...names].slice(0, 40) : null, debug };
   } catch (e) {
     debug.step = 'error';
     debug.error = e.message;
     return { names: null, debug };
   }
+}
+
+/** Extract CSRF token from meta tag or JSESSIONID cookie. */
+function getCsrfToken() {
+  // Try meta tag first (most reliable)
+  const meta = document.querySelector('meta[name="csrf-token"]')?.content;
+  if (meta) return meta;
+
+  // Fallback: JSESSIONID cookie
+  const match = document.cookie.match(/JSESSIONID="?([^";]+)"?/);
+  return match ? match[1] : null;
 }
 
 /** Recursively walk a JSON tree looking for {title:{text:"Name"}} patterns. */
@@ -657,25 +689,15 @@ function collectNamesFromJSON(obj, names, depth = 0) {
 
   if (obj.title && typeof obj.title === 'object' && typeof obj.title.text === 'string') {
     const text = obj.title.text.trim();
-    if (isLikelyPersonName(text)) names.add(text);
+    if (text.length > 2 && text.length < 60 && text.includes(' ')) {
+      names.add(text);
+    }
   }
 
   const values = Array.isArray(obj) ? obj : Object.values(obj);
   for (const val of values) {
     collectNamesFromJSON(val, names, depth + 1);
   }
-}
-
-/** Heuristic: does this string look like a person's name? */
-function isLikelyPersonName(text) {
-  return (
-    text.length > 2 &&
-    text.length < 60 &&
-    text.includes(' ') &&
-    /^[A-Z\u0590-\u05FF\u0400-\u04FF\u00C0-\u024F\u0600-\u06FF]/.test(text) &&
-    !/[<>{}[\]|]/.test(text) &&
-    !/(LinkedIn|Search|Home|Sign|Log|Page|Results|People|Connect|Premium)/i.test(text)
-  );
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────

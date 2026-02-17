@@ -1143,11 +1143,82 @@ async function scrapeFullMutualConnections(onProgress) {
   }
 }
 
-/** Extract names from a single Voyager API response page into the names Set. */
+/** Extract names from a single Voyager API response page into the names Set.
+ *
+ * LinkedIn's normalized JSON (`+json+2.1`) returns:
+ *   data.data.elements[] → search clusters, each with items[]
+ *   data.included[]      → flat entity store (re-includes ALL referenced entities)
+ *
+ * We MUST extract the profile URNs from the search result elements first,
+ * then resolve those URNs in included[]. Scanning all of included[] would
+ * re-count profiles from previous pages (they're always re-included).
+ */
 function extractNamesFromResponse(data, names) {
   const before = names.size;
 
-  // Strategy 1: included[] profiles with firstName + lastName
+  // Build a lookup map of included entities by entityUrn
+  const includedMap = new Map();
+  if (Array.isArray(data.included)) {
+    for (const item of data.included) {
+      if (item.entityUrn) includedMap.set(item.entityUrn, item);
+      // Also index by $id or *entityUrn formats
+      if (item['$id']) includedMap.set(item['$id'], item);
+    }
+  }
+
+  // Strategy 1: Walk data.data.elements[] → items[] → extract profile URNs
+  // and resolve them in the included map. This gives us ONLY this page's results.
+  const elements = data?.data?.elements;
+  if (Array.isArray(elements)) {
+    for (const cluster of elements) {
+      const items = cluster.items || [];
+      for (const entry of items) {
+        // Each item can have: item.entityResult or item.entityResult.*title
+        const entityResult = entry?.item?.entityResult;
+        if (!entityResult) continue;
+
+        // Method A: title.text is the display name
+        const titleText = entityResult?.title?.text?.trim();
+        if (titleText && isSearchResultName(titleText)) {
+          names.add(titleText);
+          continue;
+        }
+
+        // Method B: resolve the linked profile URN from included[]
+        // entityResult has "*entityUrn" or "entityUrn" pointing to a profile
+        const linkedUrn = entityResult['*entityUrn'] || entityResult.entityUrn;
+        if (linkedUrn) {
+          // The profile URN might be like "urn:li:fsd_profile:ABC"
+          // but included[] may have it as miniProfile with a different prefix.
+          // Try direct lookup and also search for the member ID part.
+          const profile = includedMap.get(linkedUrn);
+          if (profile?.firstName && profile?.lastName) {
+            names.add(`${profile.firstName} ${profile.lastName}`);
+            continue;
+          }
+          // Try finding by member ID suffix
+          const memberIdMatch = linkedUrn.match(/([^:]+)$/);
+          if (memberIdMatch) {
+            for (const [, entity] of includedMap) {
+              if (entity.entityUrn?.endsWith(memberIdMatch[1]) && entity.firstName && entity.lastName) {
+                names.add(`${entity.firstName} ${entity.lastName}`);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (names.size > before) return;
+
+  // Strategy 2 (fallback): Walk JSON tree for title.text in search results
+  collectNamesFromSearchResults(data?.data, names);
+  if (names.size > before) return;
+
+  // Strategy 3 (last resort): scan included[] — only useful for first page
+  // when the response structure is unexpected
   if (Array.isArray(data.included)) {
     for (const item of data.included) {
       if (item.firstName && item.lastName) {
@@ -1155,20 +1226,22 @@ function extractNamesFromResponse(data, names) {
       }
     }
   }
+}
 
-  // If strategy 1 found names on this page, we're done
-  if (names.size > before) return;
+/** Walk search result data (not included[]) for title.text name patterns. */
+function collectNamesFromSearchResults(obj, names, depth = 0) {
+  if (depth > 20 || !obj || typeof obj !== 'object') return;
 
-  // Strategy 2: Walk JSON tree for title.text patterns
-  collectNamesFromJSON(data, names);
-  if (names.size > before) return;
+  if (obj.title && typeof obj.title === 'object' && typeof obj.title.text === 'string') {
+    const text = obj.title.text.trim();
+    if (isSearchResultName(text)) {
+      names.add(text);
+    }
+  }
 
-  // Strategy 3: Regex on stringified JSON for firstName/lastName
-  const jsonStr = JSON.stringify(data);
-  const re = /"firstName":"([^"]+)","lastName":"([^"]+)"/g;
-  let m;
-  while ((m = re.exec(jsonStr)) !== null) {
-    names.add(`${m[1]} ${m[2]}`);
+  const values = Array.isArray(obj) ? obj : Object.values(obj);
+  for (const val of values) {
+    collectNamesFromSearchResults(val, names, depth + 1);
   }
 }
 
@@ -1183,22 +1256,6 @@ function getCsrfToken() {
   return match ? match[1] : null;
 }
 
-/** Recursively walk a JSON tree looking for {title:{text:"Name"}} patterns. */
-function collectNamesFromJSON(obj, names, depth = 0) {
-  if (depth > 15 || names.size >= 50 || !obj || typeof obj !== 'object') return;
-
-  if (obj.title && typeof obj.title === 'object' && typeof obj.title.text === 'string') {
-    const text = obj.title.text.trim();
-    if (isSearchResultName(text)) {
-      names.add(text);
-    }
-  }
-
-  const values = Array.isArray(obj) ? obj : Object.values(obj);
-  for (const val of values) {
-    collectNamesFromJSON(val, names, depth + 1);
-  }
-}
 
 /** Filter out non-name strings from LinkedIn search results (subtitles, CTAs). */
 function isSearchResultName(text) {

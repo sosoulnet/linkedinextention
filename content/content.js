@@ -475,16 +475,29 @@ function extractMutualConnections() {
   if (!mutualElement) return result;
 
   // ── 2. Extract count ──────────────────────────────────────────────
-  // LinkedIn often splits "32" and "mutual connections" into separate
-  // child elements, so the combined textContent has the count even if
-  // no single text node does. Walk up a couple levels to find it.
+  // LinkedIn splits "32" and "mutual connections" into separate child
+  // elements. textContent may concatenate them without spaces, and
+  // innerText may add proper spacing. Try both, walking up parents.
+  const countRegexes = [
+    /(\d+)\s+(?:mutual|shared)\s+connection/i,   // "32 mutual connections"
+    /(\d+)\s*(?:mutual|shared)\s*connection/i,    // "32mutual connections" (no space)
+    /(\d+)[^\d]{0,10}(?:mutual|shared)/i,         // "32\nmutual" or "32 - mutual"
+  ];
+
   let countSource = mutualElement;
-  for (let i = 0; i < 3 && countSource; i++) {
-    const text = countSource.textContent?.trim() || '';
-    const countMatch = text.match(/(\d+)\s+(?:mutual|shared)\s+connection/i);
-    if (countMatch) {
-      result.count = parseInt(countMatch[1], 10);
-      break;
+  for (let i = 0; i < 4 && countSource && result.count === 0; i++) {
+    // Try innerText first (renders like the user sees), then textContent
+    for (const textValue of [countSource.innerText, countSource.textContent]) {
+      const text = textValue?.trim() || '';
+      if (text.length > 500) continue; // skip huge containers
+      for (const regex of countRegexes) {
+        const countMatch = text.match(regex);
+        if (countMatch) {
+          result.count = parseInt(countMatch[1], 10);
+          break;
+        }
+      }
+      if (result.count > 0) break;
     }
     countSource = countSource.parentElement;
   }

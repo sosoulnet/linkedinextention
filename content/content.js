@@ -20,6 +20,7 @@ async function loadTones() {
 
 // ── State ──────────────────────────────────────────────────────────
 let panelOpen = false;
+let menuOpen = false;
 let profileData = null;
 let lastPrompts = null; // { system, user, mutualRaw } — stored for QA inspection
 
@@ -39,25 +40,85 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 function createFloatingButton() {
   const fab = document.createElement('div');
   fab.id = 'lmh-fab';
-  fab.title = 'Generate LinkedIn message suggestions';
+  fab.title = 'LinkedIn Message Helper';
   fab.innerHTML = `
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M20 2H4C2.9 2 2 2.9 2 4V22L6 18H20C21.1 18 22 17.1 22 16V4C22 2.9 21.1 2 20 2Z" fill="white"/>
       <path d="M9 11H7V9H9V11ZM13 11H11V9H13V11ZM17 11H15V9H17V11Z" fill="#0a66c2"/>
     </svg>
   `;
-  fab.addEventListener('click', togglePanel);
+  fab.addEventListener('click', toggleMenu);
   document.body.appendChild(fab);
 }
 
-// ── Panel ──────────────────────────────────────────────────────────
-function togglePanel() {
-  if (panelOpen) {
-    closePanel();
+// ── FAB Menu ──────────────────────────────────────────────────────
+function toggleMenu() {
+  if (menuOpen) {
+    closeMenu();
   } else {
-    openPanel();
+    openMenu();
   }
 }
+
+function openMenu() {
+  closeMenu(); // remove stale menu
+  if (panelOpen) closePanel();
+
+  const menu = document.createElement('div');
+  menu.id = 'lmh-fab-menu';
+  menu.innerHTML = `
+    <button class="lmh-fab-menu-item" data-action="suggest">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 2H4C2.9 2 2 2.9 2 4V22L6 18H20C21.1 18 22 17.1 22 16V4C22 2.9 21.1 2 20 2Z" fill="currentColor"/></svg>
+      Suggest Messages
+    </button>
+    <button class="lmh-fab-menu-item" data-action="mutual">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" fill="currentColor"/></svg>
+      Mutual Friends
+    </button>
+  `;
+
+  document.body.appendChild(menu);
+  menuOpen = true;
+  document.getElementById('lmh-fab').classList.add('lmh-fab-active');
+
+  // Animate in
+  requestAnimationFrame(() => menu.classList.add('lmh-fab-menu-visible'));
+
+  // Handle menu item clicks
+  menu.querySelector('[data-action="suggest"]').addEventListener('click', () => {
+    closeMenu();
+    openPanel();
+  });
+  menu.querySelector('[data-action="mutual"]').addEventListener('click', () => {
+    closeMenu();
+    openMutualFriendsModal();
+  });
+
+  // Close on click outside
+  setTimeout(() => {
+    document.addEventListener('click', handleMenuOutsideClick);
+  }, 0);
+}
+
+function handleMenuOutsideClick(e) {
+  const menu = document.getElementById('lmh-fab-menu');
+  const fab = document.getElementById('lmh-fab');
+  if (menu && !menu.contains(e.target) && !fab.contains(e.target)) {
+    closeMenu();
+  }
+}
+
+function closeMenu() {
+  document.removeEventListener('click', handleMenuOutsideClick);
+  const menu = document.getElementById('lmh-fab-menu');
+  if (menu) menu.remove();
+  menuOpen = false;
+  if (!panelOpen) {
+    document.getElementById('lmh-fab')?.classList.remove('lmh-fab-active');
+  }
+}
+
+// ── Panel ──────────────────────────────────────────────────────────
 
 async function openPanel() {
   // Load custom tones from storage
@@ -422,6 +483,302 @@ function displayMessagesInPanel(_container, messages) {
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeModal();
   });
+}
+
+// ── Mutual Friends modal ───────────────────────────────────────────
+async function openMutualFriendsModal() {
+  // Extract profile data if not already done
+  if (!profileData) profileData = extractProfileData();
+
+  // Show loading overlay while scraping
+  document.getElementById('lmh-mutual-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'lmh-mutual-overlay';
+
+  const modal = document.createElement('div');
+  modal.className = 'lmh-modal';
+
+  const header = document.createElement('div');
+  header.className = 'lmh-modal-header';
+  header.innerHTML = `
+    <span class="lmh-modal-title">Mutual Friends — ${escapeHTML(profileData.name || 'Profile')}</span>
+    <button class="lmh-modal-close">&times;</button>
+  `;
+  modal.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'lmh-modal-body';
+  body.innerHTML = `
+    <div class="lmh-loading">
+      <div class="lmh-spinner"></div>
+      <span>Loading mutual connections...</span>
+    </div>
+  `;
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('lmh-modal-visible'));
+
+  // Close handlers
+  function closeMutualModal() {
+    overlay.classList.remove('lmh-modal-visible');
+    overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+    setTimeout(() => overlay.remove(), 350);
+  }
+
+  header.querySelector('.lmh-modal-close').addEventListener('click', closeMutualModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeMutualModal();
+  });
+
+  // Drag support
+  let isDragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+  header.style.cursor = 'grab';
+
+  header.addEventListener('mousedown', (e) => {
+    if (e.target.closest('button')) return;
+    isDragging = true;
+    header.style.cursor = 'grabbing';
+    if (!modal.style.position || modal.style.position !== 'absolute') {
+      const rect = modal.getBoundingClientRect();
+      modal.style.position = 'absolute';
+      modal.style.left = rect.left + 'px';
+      modal.style.top = rect.top + 'px';
+      modal.style.margin = '0';
+    }
+    dragOffsetX = e.clientX - modal.getBoundingClientRect().left;
+    dragOffsetY = e.clientY - modal.getBoundingClientRect().top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    modal.style.left = (e.clientX - dragOffsetX) + 'px';
+    modal.style.top = (e.clientY - dragOffsetY) + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (isDragging) { isDragging = false; header.style.cursor = 'grab'; }
+  });
+
+  // Scrape mutual connections
+  let names = profileData.mutualConnections?.names || [];
+  if (names.length === 0 && profileData.mutualConnections?.count > 0) {
+    const result = await scrapeFullMutualConnections();
+    if (result.names && result.names.length > 0) {
+      names = result.names;
+      profileData.mutualConnections.names = names;
+    }
+  }
+
+  if (names.length === 0) {
+    body.innerHTML = `
+      <div class="lmh-error">No mutual connections found for this profile.</div>
+    `;
+    return;
+  }
+
+  // Render friend list with checkboxes
+  body.innerHTML = `
+    <div class="lmh-mutual-toolbar">
+      <label class="lmh-mutual-select-all">
+        <input type="checkbox" id="lmh-mutual-select-all"> Select all
+      </label>
+      <span class="lmh-mutual-count"><span id="lmh-mutual-selected-count">0</span> / ${names.length} selected</span>
+    </div>
+    <div class="lmh-mutual-list">
+      ${names.map((name, i) => `
+        <label class="lmh-mutual-item">
+          <input type="checkbox" class="lmh-mutual-cb" data-index="${i}" data-name="${escapeHTML(name)}">
+          <span class="lmh-mutual-name">${escapeHTML(name)}</span>
+        </label>
+      `).join('')}
+    </div>
+    <div class="lmh-mutual-message-section">
+      <div class="lmh-section-label">Intro request message</div>
+      <textarea id="lmh-mutual-message" class="lmh-textarea" rows="3" placeholder="The message to send your mutual friends..."></textarea>
+    </div>
+    <button id="lmh-mutual-generate-btn" class="lmh-generate-btn" style="margin-top:8px">Generate Intro Message</button>
+    <button id="lmh-mutual-submit-btn" class="lmh-generate-btn lmh-mutual-submit-btn" disabled style="margin-top:4px">Send to Selected Friends</button>
+  `;
+
+  const checkboxes = body.querySelectorAll('.lmh-mutual-cb');
+  const selectAllCb = body.querySelector('#lmh-mutual-select-all');
+  const selectedCountEl = body.querySelector('#lmh-mutual-selected-count');
+  const submitBtn = body.querySelector('#lmh-mutual-submit-btn');
+  const generateBtn = body.querySelector('#lmh-mutual-generate-btn');
+  const messageTextarea = body.querySelector('#lmh-mutual-message');
+
+  function updateCount() {
+    const count = body.querySelectorAll('.lmh-mutual-cb:checked').length;
+    selectedCountEl.textContent = count;
+    submitBtn.disabled = count === 0 || !messageTextarea.value.trim();
+  }
+
+  checkboxes.forEach((cb) => cb.addEventListener('change', () => {
+    updateCount();
+    selectAllCb.checked = body.querySelectorAll('.lmh-mutual-cb:checked').length === checkboxes.length;
+  }));
+
+  selectAllCb.addEventListener('change', () => {
+    checkboxes.forEach((cb) => { cb.checked = selectAllCb.checked; });
+    updateCount();
+  });
+
+  messageTextarea.addEventListener('input', updateCount);
+
+  // Generate intro message via AI
+  generateBtn.addEventListener('click', async () => {
+    const { apiKey, apiProvider, aiModel, userBackground } = await chrome.storage.sync.get([
+      'apiKey', 'apiProvider', 'aiModel', 'userBackground',
+    ]);
+    if (!apiKey) {
+      showNotification('API key not configured. Click the extension toolbar icon to set it up.');
+      return;
+    }
+
+    generateBtn.disabled = true;
+    generateBtn.textContent = 'Generating...';
+
+    try {
+      const introMessage = await generateIntroMessage({
+        profileData,
+        apiKey,
+        apiProvider: apiProvider || 'openai',
+        aiModel: aiModel || '',
+        userBackground: userBackground || '',
+      });
+      messageTextarea.value = introMessage;
+      updateCount();
+    } catch (err) {
+      showNotification('Failed to generate message: ' + err.message);
+    } finally {
+      generateBtn.disabled = false;
+      generateBtn.textContent = 'Generate Intro Message';
+    }
+  });
+
+  // Submit: send message to each selected friend
+  submitBtn.addEventListener('click', async () => {
+    const selected = [...body.querySelectorAll('.lmh-mutual-cb:checked')]
+      .map((cb) => cb.dataset.name);
+    const message = messageTextarea.value.trim();
+
+    if (selected.length === 0 || !message) return;
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = `Sending to ${selected.length} friend(s)...`;
+
+    let sent = 0;
+    for (const friendName of selected) {
+      try {
+        await sendLinkedInMessage(friendName, message);
+        sent++;
+      } catch (err) {
+        console.error(`Failed to send to ${friendName}:`, err);
+      }
+    }
+
+    submitBtn.textContent = `Sent to ${sent} / ${selected.length} friends`;
+    showNotification(`Intro request sent to ${sent} friend(s)!`);
+    setTimeout(() => {
+      submitBtn.textContent = 'Send to Selected Friends';
+      submitBtn.disabled = false;
+    }, 3000);
+  });
+}
+
+// ── Generate intro request message via AI ─────────────────────────
+async function generateIntroMessage({ profileData, apiKey, apiProvider, aiModel, userBackground }) {
+  const profileSummary = buildProfileSummary(profileData);
+
+  const systemPrompt = `You are a networking assistant. Write a short, friendly message that a user can send to their mutual connections asking for an introduction to someone on LinkedIn. The message should be personal, not pushy, and explain why an introduction would be valuable.${userBackground ? `\n\nAbout the person sending this request:\n${userBackground}` : ''}`;
+
+  const userPrompt = `I want to ask my mutual connections to introduce me to this person:
+
+${profileSummary}
+
+Write a single short message (2-4 sentences) I can send to a mutual friend asking them to introduce me to this person. Keep it natural and friendly. Return ONLY the message text, no quotes or formatting.`;
+
+  const defaultModel = apiProvider === 'openai' ? 'gpt-5.2' : 'claude-sonnet-4-20250514';
+  const model = aiModel || defaultModel;
+  const callFn = apiProvider === 'anthropic' ? callAnthropicRaw : callOpenAIRaw;
+  const response = await callFn(apiKey, userPrompt, systemPrompt, model);
+  return response.trim();
+}
+
+// ── Send LinkedIn message via Voyager API ─────────────────────────
+async function sendLinkedInMessage(recipientName, messageText) {
+  const csrfToken = getCsrfToken();
+  if (!csrfToken) throw new Error('No CSRF token found');
+
+  // Search for the recipient's profile URN using the name
+  const searchUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
+    + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
+    + `&origin=GLOBAL_SEARCH_HEADER&q=all`
+    + `&query=(keywords:${encodeURIComponent(recipientName)},flagshipSearchIntent:SEARCH_SRP,queryParameters:(resultType:List(PEOPLE),network:List(F)))`
+    + `&count=1&start=0`;
+
+  const searchResp = await fetch(searchUrl, {
+    headers: {
+      'csrf-token': csrfToken,
+      'accept': 'application/vnd.linkedin.normalized+json+2.1',
+      'x-restli-protocol-version': '2.0.0',
+    },
+    credentials: 'include',
+  });
+
+  if (!searchResp.ok) throw new Error(`Search failed: ${searchResp.status}`);
+
+  const searchData = await searchResp.json();
+
+  // Find the profile URN from the search results
+  let profileUrn = null;
+  if (Array.isArray(searchData.included)) {
+    for (const item of searchData.included) {
+      if (item.$type === 'com.linkedin.voyager.dash.identity.profile.Profile'
+        || (item.firstName && item.lastName && item.entityUrn)) {
+        profileUrn = item.entityUrn;
+        break;
+      }
+    }
+  }
+
+  if (!profileUrn) throw new Error('Could not find profile for: ' + recipientName);
+
+  // Extract the member ID from the URN
+  const memberMatch = profileUrn.match(/fsd_profile:(.+)/);
+  if (!memberMatch) throw new Error('Invalid profile URN');
+  const memberId = memberMatch[1];
+
+  // Send the message using the messaging endpoint
+  const msgUrl = 'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
+
+  const msgResp = await fetch(msgUrl, {
+    method: 'POST',
+    headers: {
+      'csrf-token': csrfToken,
+      'accept': 'application/vnd.linkedin.normalized+json+2.1',
+      'content-type': 'application/json; charset=UTF-8',
+      'x-restli-protocol-version': '2.0.0',
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      dedupeByClientGeneratedToken: false,
+      mailboxUrn: 'urn:li:fsd_profile:me',
+      message: {
+        body: { text: messageText },
+        renderContentUnions: [],
+      },
+      hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
+    }),
+  });
+
+  if (!msgResp.ok) {
+    const errText = await msgResp.text();
+    throw new Error(`Message send failed (${msgResp.status}): ${errText.slice(0, 200)}`);
+  }
 }
 
 // ── Profile extraction ─────────────────────────────────────────────
@@ -865,6 +1222,53 @@ async function callAnthropic(apiKey, userPrompt, systemPrompt, model) {
   const data = await response.json();
   const content = data.content?.[0]?.text || '';
   return parseMessagesJSON(content);
+}
+
+async function callOpenAIRaw(apiKey, userPrompt, systemPrompt, model) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.8,
+      max_completion_tokens: 1024,
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `OpenAI API error: ${response.status}`);
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+async function callAnthropicRaw(apiKey, userPrompt, systemPrompt, model) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      temperature: 0.8,
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Anthropic API error: ${response.status}`);
+  }
+  const data = await response.json();
+  return data.content?.[0]?.text || '';
 }
 
 function parseMessagesJSON(content) {

@@ -708,15 +708,11 @@ async function generateMessages({ profileData, tones, context, apiKey, apiProvid
     .map((t) => `- ${toneDescMap[t] || t}`)
     .join('\n');
 
-  const backgroundBlock = userBackground
-    ? `\nAbout me (the sender):\n${userBackground}\n`
-    : '';
-
   const userPrompt = `Here is the LinkedIn profile of the person I want to message:
 
 ${profileSummary}
-${backgroundBlock}
-${context ? `Additional context: ${context}\n` : ''}
+${context ? `\nAdditional context: ${context}\n` : ''}
+
 Please generate exactly ${tones.length} message option(s), one for each of these tones:
 ${toneInstructions}
 

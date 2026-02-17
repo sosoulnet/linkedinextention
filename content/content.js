@@ -429,79 +429,73 @@ function extractProfileData() {
 function extractMutualConnections() {
   const result = { count: 0, names: [] };
 
-  // Look for the mutual connections link/text in the profile header area
-  // LinkedIn shows "X mutual connections" or "X mutual connection" as a clickable link
-  const allLinks = document.querySelectorAll('a[href*="/search/results/people"]');
-  for (const link of allLinks) {
-    const text = link.textContent?.trim() || '';
-    const match = text.match(/(\d+)\s+mutual\s+connection/i);
-    if (match) {
-      result.count = parseInt(match[1], 10);
+  // ── 1. Find the mutual-connections element via broad text search ──
+  // LinkedIn uses various DOM structures; the most reliable approach is
+  // to walk all links and spans looking for the "mutual connection" text.
+  let mutualElement = null;
+
+  // First try: any <a> whose visible text mentions "mutual connection(s)"
+  for (const el of document.querySelectorAll('a, button, span')) {
+    const text = el.textContent?.trim() || '';
+    if (/mutual\s+connection/i.test(text)) {
+      // Extract count from text like "32 mutual connections" or "1 mutual connection"
+      const countMatch = text.match(/(\d+)\s+mutual\s+connection/i);
+      if (countMatch) {
+        result.count = parseInt(countMatch[1], 10);
+      }
+      mutualElement = el;
       break;
     }
   }
 
-  // Fallback: search spans and other elements for mutual connection text
-  if (result.count === 0) {
-    const spans = document.querySelectorAll('span[aria-hidden="true"]');
-    for (const span of spans) {
-      const text = span.textContent?.trim() || '';
-      const match = text.match(/(\d+)\s+mutual\s+connection/i);
-      if (match) {
-        result.count = parseInt(match[1], 10);
-        break;
-      }
+  // ── 2. Extract mutual connection names ────────────────────────────
+  // Walk up from the mutual element to find the containing block,
+  // then look for names in nearby img[alt], aria-labels, and text nodes.
+  if (mutualElement) {
+    // Walk up a few levels to find the container that holds the avatars/names
+    let container = mutualElement;
+    for (let i = 0; i < 5; i++) {
+      if (container.parentElement) container = container.parentElement;
     }
-  }
 
-  // Try to extract visible mutual connection names
-  // LinkedIn sometimes shows profile pics with names of shared connections
-  // These often appear near the "mutual connections" link as img alt text or nearby spans
-  const mutualSection = document.querySelector('.profile-shared-connections');
-  if (mutualSection) {
-    mutualSection.querySelectorAll('img[alt]').forEach((img) => {
-      const name = img.alt?.trim();
-      if (name && name !== '' && !name.toLowerCase().includes('linkedin')) {
-        result.names.push(name);
+    // Strategy A: img alt attributes (avatar thumbnails of mutual connections)
+    container.querySelectorAll('img[alt]').forEach((img) => {
+      const alt = img.alt?.trim();
+      if (
+        alt &&
+        alt.length > 1 &&
+        alt.length < 80 &&
+        !alt.toLowerCase().includes('linkedin') &&
+        !alt.toLowerCase().includes('photo of') &&
+        !alt.toLowerCase().includes('company logo') &&
+        !/mutual\s+connection/i.test(alt) &&
+        !/^\d+$/.test(alt)
+      ) {
+        result.names.push(alt);
+      }
+    });
+
+    // Strategy B: aria-label attributes on links (often contain full names)
+    container.querySelectorAll('a[aria-label]').forEach((a) => {
+      const label = a.getAttribute('aria-label')?.trim();
+      if (
+        label &&
+        label.length > 1 &&
+        label.length < 80 &&
+        !/mutual/i.test(label) &&
+        !/connection/i.test(label) &&
+        !/message/i.test(label) &&
+        !/follow/i.test(label)
+      ) {
+        result.names.push(label);
       }
     });
   }
 
-  // Alternative: look for the shared connections container near the header
-  if (result.names.length === 0) {
-    // Mutual connection names sometimes appear as text in anchor tags near the count
-    const headerSection = document.querySelector('.ph5, .pv-top-card');
-    if (headerSection) {
-      const mutualLinks = headerSection.querySelectorAll('a[href*="/search/results/people"], a[href*="connectionOf"]');
-      for (const link of mutualLinks) {
-        // Look for nearby sibling elements that list names
-        const parent = link.closest('div') || link.parentElement;
-        if (parent) {
-          parent.querySelectorAll('img[alt]').forEach((img) => {
-            const name = img.alt?.trim();
-            if (name && name !== '' && !name.toLowerCase().includes('linkedin') && !name.toLowerCase().includes('photo')) {
-              result.names.push(name);
-            }
-          });
-          // Also check for name text in spans near the mutual link
-          parent.querySelectorAll('span[aria-hidden="true"]').forEach((span) => {
-            const text = span.textContent?.trim();
-            if (text && !text.match(/\d+\s+mutual/i) && !text.match(/connection/i) && text.length > 1 && text.length < 60) {
-              // Likely a name if it's near the mutual connections area and not the count itself
-              if (text.includes(',') || result.names.length < 5) {
-                // Could be comma-separated names like "John, Jane, and 3 others"
-                const namesParsed = text.split(/,\s*|and\s+/i).map(n => n.trim()).filter(n => n && !n.match(/^\d+\s+other/i));
-                result.names.push(...namesParsed);
-              }
-            }
-          });
-        }
-      }
-    }
-  }
-
-  // Deduplicate and limit
-  result.names = [...new Set(result.names)].slice(0, 5);
+  // Deduplicate, clean, and limit
+  result.names = [...new Set(result.names)]
+    .filter((n) => n && n.length > 1)
+    .slice(0, 5);
 
   return result;
 }
@@ -583,10 +577,10 @@ function buildProfileSummary(profile) {
     summary += `\nKey Skills: ${profile.skills.join(', ')}\n`;
   }
 
-  if (profile.mutualConnections && (profile.mutualConnections.count > 0 || profile.mutualConnections.names.length > 0)) {
+  if (profile.mutualConnections?.count > 0) {
     summary += `\nMutual Connections: ${profile.mutualConnections.count} shared connection(s)`;
-    if (profile.mutualConnections.names.length > 0) {
-      summary += ` including: ${profile.mutualConnections.names.join(', ')}`;
+    if (profile.mutualConnections.names?.length > 0) {
+      summary += `, including: ${profile.mutualConnections.names.join(', ')}`;
     }
     summary += '\n';
   }

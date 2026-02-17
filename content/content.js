@@ -152,10 +152,13 @@ async function openPanel() {
   // Background: scrape the full mutual-connections list via Voyager API
   // so it's ready for the AI prompt when the user clicks Generate.
   if (profileData.mutualConnections?.count > 0) {
-    scrapeFullMutualConnections().then(({ names: fullNames, debug }) => {
+    scrapeFullMutualConnections().then(({ names: fullNames, nameToUrn, debug }) => {
       profileData.mutualConnections.fetchDebug = debug;
       if (fullNames && fullNames.length > 0) {
         profileData.mutualConnections.names = fullNames;
+      }
+      if (nameToUrn) {
+        profileData.mutualConnections.nameToUrn = nameToUrn;
       }
     });
   }
@@ -577,6 +580,9 @@ async function openMutualFriendsModal() {
       names = result.names;
       profileData.mutualConnections.names = names;
     }
+    if (result.nameToUrn) {
+      profileData.mutualConnections.nameToUrn = result.nameToUrn;
+    }
   }
 
   if (names.length === 0) {
@@ -793,75 +799,129 @@ async function openMutualFriendsModal() {
 
 // ── Send LinkedIn message via Voyager API ─────────────────────────
 async function sendLinkedInMessage(recipientName, messageText) {
+  console.log(`[LMH] sendLinkedInMessage: to="${recipientName}"`);
   const csrfToken = getCsrfToken();
   if (!csrfToken) throw new Error('No CSRF token found');
 
-  // Search for the recipient's profile URN using the name
-  const searchUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
-    + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
-    + `&origin=GLOBAL_SEARCH_HEADER&q=all`
-    + `&query=(keywords:${encodeURIComponent(recipientName)},flagshipSearchIntent:SEARCH_SRP,queryParameters:(resultType:List(PEOPLE),network:List(F)))`
-    + `&count=1&start=0`;
+  // 1. Try to use the stored URN from the mutual connections scrape
+  let profileUrn = profileData?.mutualConnections?.nameToUrn?.get(recipientName) || null;
+  console.log(`[LMH] Stored URN for "${recipientName}":`, profileUrn);
 
-  const searchResp = await fetch(searchUrl, {
-    headers: {
-      'csrf-token': csrfToken,
-      'accept': 'application/vnd.linkedin.normalized+json+2.1',
-      'x-restli-protocol-version': '2.0.0',
-    },
-    credentials: 'include',
-  });
+  // 2. Fallback: search for the person by name
+  if (!profileUrn) {
+    console.log(`[LMH] No stored URN, searching for "${recipientName}"…`);
+    const searchUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
+      + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
+      + `&origin=GLOBAL_SEARCH_HEADER&q=all`
+      + `&query=(keywords:${encodeURIComponent(recipientName)},flagshipSearchIntent:SEARCH_SRP,queryParameters:(resultType:List(PEOPLE),network:List(F)))`
+      + `&count=1&start=0`;
 
-  if (!searchResp.ok) throw new Error(`Search failed: ${searchResp.status}`);
+    const searchResp = await fetch(searchUrl, {
+      headers: {
+        'csrf-token': csrfToken,
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        'x-restli-protocol-version': '2.0.0',
+      },
+      credentials: 'include',
+    });
 
-  const searchData = await searchResp.json();
+    if (!searchResp.ok) throw new Error(`Search failed: ${searchResp.status}`);
 
-  // Find the profile URN from the search results
-  let profileUrn = null;
-  if (Array.isArray(searchData.included)) {
-    for (const item of searchData.included) {
-      if (item.$type === 'com.linkedin.voyager.dash.identity.profile.Profile'
-        || (item.firstName && item.lastName && item.entityUrn)) {
-        profileUrn = item.entityUrn;
-        break;
+    const searchData = await searchResp.json();
+
+    // Try multiple strategies to find the profile URN
+    if (Array.isArray(searchData.included)) {
+      for (const item of searchData.included) {
+        // Direct profile type
+        if (item.$type === 'com.linkedin.voyager.dash.identity.profile.Profile'
+          || (item.firstName && item.lastName && item.entityUrn)) {
+          profileUrn = item.entityUrn;
+          break;
+        }
+        // Any fsd_profile URN (since we searched count=1, it should be the right person)
+        if (item.entityUrn?.includes('fsd_profile') && !item.entityUrn.includes(',')) {
+          profileUrn = item.entityUrn;
+          break;
+        }
+      }
+      // Last resort: regex the entire response for an fsd_profile URN
+      if (!profileUrn) {
+        const str = JSON.stringify(searchData);
+        const m = str.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+        if (m) profileUrn = `urn:li:fsd_profile:${m[1]}`;
       }
     }
+    console.log(`[LMH] Search found URN:`, profileUrn);
   }
 
   if (!profileUrn) throw new Error('Could not find profile for: ' + recipientName);
 
-  // Extract the member ID from the URN
+  // 3. Extract the member ID from the URN
   const memberMatch = profileUrn.match(/fsd_profile:(.+)/);
-  if (!memberMatch) throw new Error('Invalid profile URN');
+  if (!memberMatch) throw new Error('Invalid profile URN: ' + profileUrn);
   const memberId = memberMatch[1];
+  console.log(`[LMH] Sending message to memberId="${memberId}"…`);
 
-  // Send the message using the messaging endpoint
-  const msgUrl = 'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
+  // 4. Send the message using the messaging API
+  //    Try the newer dash endpoint first, fall back to the legacy one
+  const endpoints = [
+    'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage',
+    'https://www.linkedin.com/voyager/api/messaging/conversations',
+  ];
 
-  const msgResp = await fetch(msgUrl, {
-    method: 'POST',
-    headers: {
-      'csrf-token': csrfToken,
-      'accept': 'application/vnd.linkedin.normalized+json+2.1',
-      'content-type': 'application/json; charset=UTF-8',
-      'x-restli-protocol-version': '2.0.0',
-    },
-    credentials: 'include',
-    body: JSON.stringify({
-      dedupeByClientGeneratedToken: false,
-      mailboxUrn: 'urn:li:fsd_profile:me',
-      message: {
-        body: { text: messageText },
-        renderContentUnions: [],
-      },
-      hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
-    }),
-  });
+  let lastError = null;
+  for (const msgUrl of endpoints) {
+    const isLegacy = msgUrl.includes('/messaging/conversations');
 
-  if (!msgResp.ok) {
-    const errText = await msgResp.text();
-    throw new Error(`Message send failed (${msgResp.status}): ${errText.slice(0, 200)}`);
+    const payload = isLegacy
+      ? {
+          // Legacy messaging API format
+          keyVersion: 'LEGACY_INBOX',
+          conversationCreate: {
+            eventCreate: { value: { 'com.linkedin.voyager.messaging.create.MessageCreate': { body: messageText, attachments: [] } } },
+            recipients: [memberId],
+            subtype: 'MEMBER_TO_MEMBER',
+          },
+        }
+      : {
+          // Newer dash messaging format
+          dedupeByClientGeneratedToken: false,
+          mailboxUrn: 'urn:li:fsd_profile:me',
+          message: {
+            body: { text: messageText },
+            renderContentUnions: [],
+          },
+          hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
+        };
+
+    try {
+      const msgResp = await fetch(msgUrl, {
+        method: 'POST',
+        headers: {
+          'csrf-token': csrfToken,
+          'accept': 'application/vnd.linkedin.normalized+json+2.1',
+          'content-type': 'application/json; charset=UTF-8',
+          'x-restli-protocol-version': '2.0.0',
+        },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+
+      if (msgResp.ok) {
+        console.log(`[LMH] Message sent successfully via ${isLegacy ? 'legacy' : 'dash'} API`);
+        return;
+      }
+
+      const errText = await msgResp.text();
+      lastError = `${msgUrl} → ${msgResp.status}: ${errText.slice(0, 200)}`;
+      console.warn(`[LMH] Message endpoint failed: ${lastError}`);
+    } catch (e) {
+      lastError = `${msgUrl} → ${e.message}`;
+      console.warn(`[LMH] Message endpoint error: ${lastError}`);
+    }
   }
+
+  throw new Error(`Message send failed: ${lastError}`);
 }
 
 // ── Profile extraction ─────────────────────────────────────────────
@@ -1054,7 +1114,7 @@ async function scrapeFullMutualConnections(onProgress) {
   // with count=1, compare the returned paging.total to the expected mutual
   // connection count, and pick the best match.
   const PAGE_SIZE = 49;
-  const names = new Set();
+  const nameToUrn = new Map(); // name → profile URN
   let start = 0;
   let pagingTotal = 0;
   debug.pages = 0;
@@ -1129,7 +1189,7 @@ async function scrapeFullMutualConnections(onProgress) {
       }
 
       console.log(`[LMH] Fetching page ${debug.pages + 1}, start=${start}, names so far=${names.size}`);
-      if (onProgress) onProgress(names.size, debug.pages + 1);
+      if (onProgress) onProgress(nameToUrn.size, debug.pages + 1);
 
       const resp = await fetch(apiUrl, {
         headers: {
@@ -1191,15 +1251,12 @@ async function scrapeFullMutualConnections(onProgress) {
         }
       }
 
-      const prevSize = names.size;
+      const prevSize = nameToUrn.size;
 
-      // ── Extract names from LinkedIn's normalized JSON ──
+      // ── Extract names + profile URNs from LinkedIn's normalized JSON ──
       // The response has two parts:
       //   data.included[] — flat entity store (profiles, text, images, etc.)
       //   data.data.elements[] — search result clusters referencing included entities
-      //
-      // Strategy: build an entity lookup, then walk the search result tree
-      //           to find the "title" of each person result.
 
       if (Array.isArray(data.included)) {
         // Build entity map: entityUrn → entity
@@ -1209,82 +1266,78 @@ async function scrapeFullMutualConnections(onProgress) {
           if (key) entityMap[key] = item;
         }
 
+        // Helper: extract fsd_profile URN from an entity or its navigation URL
+        function extractProfileUrn(item) {
+          if (!item) return null;
+          // Direct entityUrn
+          if (item.entityUrn?.includes('fsd_profile')) return item.entityUrn;
+          // Navigation URL like /in/username → not a URN, skip
+          // Check nested references
+          const navUrn = item.navigationUrn || item['*navigationUrn'];
+          if (navUrn?.includes('fsd_profile')) return navUrn;
+          return null;
+        }
+
         // Strategy 1: Direct firstName + lastName on included items
         for (const item of data.included) {
-          if (item.firstName && item.lastName) {
-            names.add(`${item.firstName} ${item.lastName}`);
-          }
-          // Also check localizedFirstName / localizedLastName
-          if (item.localizedFirstName && item.localizedLastName) {
-            names.add(`${item.localizedFirstName} ${item.localizedLastName}`);
+          let name = null;
+          if (item.firstName && item.lastName) name = `${item.firstName} ${item.lastName}`;
+          else if (item.localizedFirstName && item.localizedLastName) name = `${item.localizedFirstName} ${item.localizedLastName}`;
+          if (name) {
+            const urn = extractProfileUrn(item);
+            nameToUrn.set(name, urn || nameToUrn.get(name) || null);
           }
         }
 
-        // Strategy 2: Find EntityResult items → resolve title → get text
-        // In normalized JSON, search results have $type containing "EntityResult"
-        // with title being either an inline object or a reference (string URN)
+        // Strategy 2: Find EntityResult items → resolve title → get text + URN
         for (const item of data.included) {
           const type = item.$type || item['$recipeType'] || '';
           if (/EntityResult|SearchResult/i.test(type)) {
             let name = null;
-
-            // Title might be inline: { title: { text: "Name" } }
-            if (item.title?.text) {
-              name = item.title.text;
-            }
-            // Title might be a reference: { "*title": "urn:li:..." }
-            else if (item['*title'] && entityMap[item['*title']]) {
-              name = entityMap[item['*title']].text;
-            }
-            // Some formats use navigationUrl to identify people results
-            // and store the name in title
-            else if (item.title && typeof item.title === 'string') {
-              name = item.title;
-            }
+            if (item.title?.text) name = item.title.text;
+            else if (item['*title'] && entityMap[item['*title']]) name = entityMap[item['*title']].text;
+            else if (item.title && typeof item.title === 'string') name = item.title;
 
             if (name && typeof name === 'string' && name.trim().length > 1) {
-              names.add(name.trim());
+              name = name.trim();
+              const urn = extractProfileUrn(item);
+              nameToUrn.set(name, urn || nameToUrn.get(name) || null);
             }
           }
         }
 
-        // Strategy 3: Find TextViewModel items whose text looks like a person name
-        // BUT only if they're referenced by an EntityResult title (to avoid noise)
-        // → already handled above via entityMap resolution
-
-        // Strategy 4: Walk data.data.elements for names embedded in the result tree
+        // Strategy 3: Walk data.data.elements for names embedded in the result tree
         const clusters = data?.data?.elements || [];
         for (const cluster of clusters) {
           const items = cluster.items || [];
           for (const entry of items) {
-            // Each item might have item.entityResult or item.entity
             const result = entry.item?.entityResult || entry.entityResult || entry;
-            if (result?.title?.text) {
-              names.add(result.title.text.trim());
-            }
-            // Follow references
-            if (result?.['*title'] && entityMap[result['*title']]) {
-              const t = entityMap[result['*title']].text;
-              if (t) names.add(t.trim());
+            let name = null;
+            if (result?.title?.text) name = result.title.text.trim();
+            else if (result?.['*title'] && entityMap[result['*title']]) name = entityMap[result['*title']].text?.trim();
+
+            if (name && name.length > 1) {
+              const urn = extractProfileUrn(result);
+              nameToUrn.set(name, urn || nameToUrn.get(name) || null);
             }
           }
         }
 
-        // Strategy 5: If still nothing, find any item with a 'text' field
-        // that's referenced by an item containing 'navigationUrl' with '/in/'
-        if (names.size === prevSize) {
+        // Strategy 4: If still nothing, items with /in/ nav URL + title.text
+        if (nameToUrn.size === prevSize) {
           for (const item of data.included) {
-            const type = item.$type || item['$recipeType'] || '';
             const navUrl = item.navigationUrl || item.url || '';
             if (navUrl.includes('/in/') && item.title?.text) {
-              names.add(item.title.text.trim());
+              const name = item.title.text.trim();
+              const urn = extractProfileUrn(item);
+              nameToUrn.set(name, urn || nameToUrn.get(name) || null);
             }
           }
         }
       }
 
-      const newNames = names.size - prevSize;
-      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${names.size})`);
+      const newNames = nameToUrn.size - prevSize;
+      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${nameToUrn.size})`);
 
       start += PAGE_SIZE;
 
@@ -1297,17 +1350,18 @@ async function scrapeFullMutualConnections(onProgress) {
     } while (start < pagingTotal);
 
     debug.step = 'done';
-    debug.namesFound = names.size;
-    console.log(`[LMH] Done: ${names.size} total names across ${debug.pages} pages`);
+    debug.namesFound = nameToUrn.size;
+    const urnCount = [...nameToUrn.values()].filter(Boolean).length;
+    console.log(`[LMH] Done: ${nameToUrn.size} names (${urnCount} with URNs) across ${debug.pages} pages`);
 
-    return { names: names.size > 0 ? [...names] : null, debug };
+    return { names: nameToUrn.size > 0 ? [...nameToUrn.keys()] : null, nameToUrn, debug };
   } catch (e) {
     debug.step = 'error';
     debug.error = e.message;
     console.error('[LMH] scrapeFullMutualConnections error:', e);
-    if (names.size > 0) {
-      debug.namesFound = names.size;
-      return { names: [...names], debug };
+    if (nameToUrn.size > 0) {
+      debug.namesFound = nameToUrn.size;
+      return { names: [...nameToUrn.keys()], nameToUrn, debug };
     }
     return { names: null, debug };
   }

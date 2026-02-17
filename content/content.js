@@ -567,8 +567,12 @@ async function openMutualFriendsModal() {
   let names = profileData.mutualConnections?.names || [];
   const totalCount = profileData.mutualConnections?.count || 0;
   if (names.length < totalCount || (names.length === 0 && totalCount > 0)) {
-    body.innerHTML = `<div class="lmh-loading" style="padding:24px;text-align:center;">Loading all ${totalCount} mutual connections…</div>`;
-    const result = await scrapeFullMutualConnections();
+    body.innerHTML = `<div id="lmh-loading-progress" class="lmh-loading" style="padding:24px;text-align:center;">Loading mutual connections… (page 1)</div>`;
+    const loadingEl = body.querySelector('#lmh-loading-progress');
+    const result = await scrapeFullMutualConnections((count, page) => {
+      if (loadingEl) loadingEl.textContent = `Loading mutual connections… ${count} found (page ${page})`;
+    });
+    console.log('[LMH] scrapeFullMutualConnections result:', result.debug);
     if (result.names && result.names.length > 0) {
       names = result.names;
       profileData.mutualConnections.names = names;
@@ -1001,7 +1005,7 @@ function extractMutualConnections() {
 
 // ── Full mutual-connections scraping (LinkedIn Voyager API) ────────
 // Returns { names: string[] | null, debug: object }
-async function scrapeFullMutualConnections() {
+async function scrapeFullMutualConnections(onProgress) {
   const debug = { step: 'init' };
 
   // 1. Find the mutual connections link to extract the profile URN
@@ -1011,6 +1015,7 @@ async function scrapeFullMutualConnections() {
 
   if (!link?.href) {
     debug.step = 'no-link-found';
+    console.log('[LMH] scrapeFullMutualConnections: no mutual connection link found');
     return { names: null, debug };
   }
 
@@ -1039,14 +1044,18 @@ async function scrapeFullMutualConnections() {
   }
 
   // 4. Call LinkedIn Voyager search API with pagination to get ALL results
+  // LinkedIn's search API returns ~10 actual people per page (inside the
+  // included[] array which also holds metadata). We use count=49 but the
+  // real people-per-page is usually 10. We keep paginating until no new
+  // names appear on a page.
   const PAGE_SIZE = 49;
   const names = new Set();
   let start = 0;
-  let totalAvailable = Infinity; // will be set from API paging metadata
   debug.pages = 0;
 
   try {
-    while (start < totalAvailable) {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
       const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
         + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
         + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
@@ -1055,6 +1064,9 @@ async function scrapeFullMutualConnections() {
         + `&count=${PAGE_SIZE}&start=${start}`;
 
       if (start === 0) debug.apiUrl = apiUrl;
+
+      console.log(`[LMH] Fetching page ${debug.pages + 1}, start=${start}, names so far=${names.size}`);
+      if (onProgress) onProgress(names.size, debug.pages + 1);
 
       const resp = await fetch(apiUrl, {
         headers: {
@@ -1071,6 +1083,7 @@ async function scrapeFullMutualConnections() {
         debug.step = 'api-error';
         const errText = await resp.text();
         debug.errorBody = errText.slice(0, 1000);
+        console.warn(`[LMH] API error on page ${debug.pages + 1}: ${resp.status}`, errText.slice(0, 200));
         if (names.size > 0) break;
         return { names: null, debug };
       }
@@ -1079,12 +1092,12 @@ async function scrapeFullMutualConnections() {
       debug.hasIncluded = Array.isArray(data.included);
       debug.pages++;
 
-      // Extract total from paging metadata (first page)
-      // LinkedIn returns paging info inside data.data.paging or inside
-      // the included elements or inside cluster paging objects.
-      if (totalAvailable === Infinity) {
-        totalAvailable = extractPagingTotal(data) || Infinity;
-        debug.totalAvailable = totalAvailable;
+      // Log the raw response structure on first page for debugging
+      if (debug.pages === 1) {
+        console.log('[LMH] First page response keys:', Object.keys(data));
+        console.log('[LMH] included count:', data.included?.length);
+        console.log('[LMH] data.data keys:', data.data ? Object.keys(data.data) : 'N/A');
+        if (data.data?.paging) console.log('[LMH] paging:', JSON.stringify(data.data.paging));
       }
 
       const prevSize = names.size;
@@ -1094,49 +1107,40 @@ async function scrapeFullMutualConnections() {
 
       const newNames = names.size - prevSize;
       debug[`page${debug.pages}_new`] = newNames;
+      debug[`page${debug.pages}_included`] = data.included?.length || 0;
+
+      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${names.size}), included items: ${data.included?.length || 0}`);
 
       // If no new names found on this page, we've exhausted results
-      if (newNames === 0) break;
+      if (newNames === 0) {
+        console.log('[LMH] No new names on this page, stopping pagination');
+        break;
+      }
 
       start += PAGE_SIZE;
 
-      // Safety cap: don't make more than 20 requests (~980 connections)
-      if (debug.pages >= 20) break;
+      // Safety cap: don't make more than 40 requests (~2000 connections)
+      if (debug.pages >= 40) {
+        console.log('[LMH] Hit safety cap of 40 pages');
+        break;
+      }
     }
 
     debug.step = 'done';
     debug.namesFound = names.size;
+    console.log(`[LMH] Done: ${names.size} total names across ${debug.pages} pages`);
 
     return { names: names.size > 0 ? [...names] : null, debug };
   } catch (e) {
     debug.step = 'error';
     debug.error = e.message;
+    console.error('[LMH] scrapeFullMutualConnections error:', e);
     if (names.size > 0) {
       debug.namesFound = names.size;
       return { names: [...names], debug };
     }
     return { names: null, debug };
   }
-}
-
-/** Try to extract total result count from LinkedIn Voyager paging metadata. */
-function extractPagingTotal(data) {
-  // Method 1: data.data.paging.total
-  if (data?.data?.paging?.total) return data.data.paging.total;
-
-  // Method 2: Look in included[] for paging objects
-  if (Array.isArray(data.included)) {
-    for (const item of data.included) {
-      if (item.paging?.total) return item.paging.total;
-    }
-  }
-
-  // Method 3: Regex search for "total":NNN in the JSON
-  const jsonStr = JSON.stringify(data);
-  const match = jsonStr.match(/"total"\s*:\s*(\d+)/);
-  if (match) return parseInt(match[1], 10);
-
-  return null;
 }
 
 /** Extract names from a single Voyager API response page into the names Set. */

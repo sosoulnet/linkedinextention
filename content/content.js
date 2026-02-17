@@ -1030,7 +1030,11 @@ async function scrapeFullMutualConnections(onProgress) {
     return { names: null, debug };
   }
 
-  const profileUrn = decodeURIComponent(urnMatch[1]).replace(/"/g, '');
+  let profileUrn = decodeURIComponent(urnMatch[1]).replace(/"/g, '');
+  // Ensure we have the full URN — the dash API needs urn:li:fsd_profile: prefix
+  if (!profileUrn.startsWith('urn:')) {
+    profileUrn = `urn:li:fsd_profile:${profileUrn}`;
+  }
   debug.profileUrn = profileUrn;
 
   // 3. Get CSRF token (needed for Voyager API calls)
@@ -1056,11 +1060,14 @@ async function scrapeFullMutualConnections(onProgress) {
 
   try {
     do {
+      // URL-encode the URN (colons → %3A) so the RESTLI query parser
+      // recognises it as a single token inside List(…)
+      const encodedUrn = encodeURIComponent(profileUrn);
       const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
         + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
         + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
         + `&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:`
-        + `(facetConnectionOf:List(${profileUrn}),facetNetwork:List(F),resultType:List(PEOPLE)))`
+        + `(facetConnectionOf:List(${encodedUrn}),facetNetwork:List(F),resultType:List(PEOPLE)))`
         + `&count=${PAGE_SIZE}&start=${start}`;
 
       if (start === 0) debug.apiUrl = apiUrl;
@@ -1096,7 +1103,8 @@ async function scrapeFullMutualConnections(onProgress) {
       if (debug.pages === 1 && data.data?.paging?.total) {
         pagingTotal = data.data.paging.total;
         debug.pagingTotal = pagingTotal;
-        console.log(`[LMH] Paging total: ${pagingTotal}`);
+        const expectedCount = profileData?.mutualConnections?.count || '?';
+        console.log(`[LMH] Paging total: ${pagingTotal} (expected ~${expectedCount} mutual connections)`);
       }
 
       // Log first page structure for debugging

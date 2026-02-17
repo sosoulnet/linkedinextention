@@ -562,9 +562,12 @@ async function openMutualFriendsModal() {
     if (isDragging) { isDragging = false; header.style.cursor = 'grab'; }
   });
 
-  // Scrape mutual connections
+  // Scrape mutual connections — always call the API if the current list
+  // is shorter than the total count (the DOM text only shows 2-3 names).
   let names = profileData.mutualConnections?.names || [];
-  if (names.length === 0 && profileData.mutualConnections?.count > 0) {
+  const totalCount = profileData.mutualConnections?.count || 0;
+  if (names.length < totalCount || (names.length === 0 && totalCount > 0)) {
+    body.innerHTML = `<div class="lmh-loading" style="padding:24px;text-align:center;">Loading all ${totalCount} mutual connections…</div>`;
     const result = await scrapeFullMutualConnections();
     if (result.names && result.names.length > 0) {
       names = result.names;

@@ -1043,19 +1043,19 @@ async function scrapeFullMutualConnections(onProgress) {
     return { names: null, debug };
   }
 
-  // 4. Call LinkedIn Voyager search API with pagination to get ALL results
-  // LinkedIn's search API returns ~10 actual people per page (inside the
-  // included[] array which also holds metadata). We use count=49 but the
-  // real people-per-page is usually 10. We keep paginating until no new
-  // names appear on a page.
+  // 4. Call LinkedIn Voyager search API with pagination to get ALL results.
+  //
+  // LinkedIn's normalized JSON includes a flat `included[]` entity store.
+  // Profiles across pages overlap heavily (only ~1 new per page via Set dedup).
+  // So we paginate based on the paging total, not on "new names found".
   const PAGE_SIZE = 49;
   const names = new Set();
   let start = 0;
+  let pagingTotal = 0;
   debug.pages = 0;
 
   try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
+    do {
       const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
         + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
         + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
@@ -1083,7 +1083,7 @@ async function scrapeFullMutualConnections(onProgress) {
         debug.step = 'api-error';
         const errText = await resp.text();
         debug.errorBody = errText.slice(0, 1000);
-        console.warn(`[LMH] API error on page ${debug.pages + 1}: ${resp.status}`, errText.slice(0, 200));
+        console.warn(`[LMH] API error on page ${debug.pages + 1}: ${resp.status}`);
         if (names.size > 0) break;
         return { names: null, debug };
       }
@@ -1092,39 +1092,47 @@ async function scrapeFullMutualConnections(onProgress) {
       debug.hasIncluded = Array.isArray(data.included);
       debug.pages++;
 
-      // Log the raw response structure on first page for debugging
-      if (debug.pages === 1) {
-        console.log('[LMH] First page response keys:', Object.keys(data));
-        console.log('[LMH] included count:', data.included?.length);
-        console.log('[LMH] data.data keys:', data.data ? Object.keys(data.data) : 'N/A');
-        if (data.data?.paging) console.log('[LMH] paging:', JSON.stringify(data.data.paging));
+      // Get paging total from first page
+      if (debug.pages === 1 && data.data?.paging?.total) {
+        pagingTotal = data.data.paging.total;
+        debug.pagingTotal = pagingTotal;
+        console.log(`[LMH] Paging total: ${pagingTotal}`);
+      }
+
+      // Log first page structure for debugging
+      if (debug.pages === 1 && Array.isArray(data.included)) {
+        const profileItems = data.included.filter(i => i.firstName && i.lastName);
+        console.log(`[LMH] Page 1: ${data.included.length} included items, ${profileItems.length} with firstName+lastName`);
+        if (profileItems.length > 0) {
+          console.log('[LMH] Sample profile:', profileItems[0].firstName, profileItems[0].lastName);
+        }
+        // Dump keys of first few included items to understand the structure
+        console.log('[LMH] First 3 included item keys:', data.included.slice(0, 3).map(i => Object.keys(i)));
       }
 
       const prevSize = names.size;
 
-      // Extract names from this page
-      extractNamesFromResponse(data, names, debug.pages);
+      // Extract names: scan included[] for profiles with firstName + lastName
+      if (Array.isArray(data.included)) {
+        for (const item of data.included) {
+          if (item.firstName && item.lastName) {
+            names.add(`${item.firstName} ${item.lastName}`);
+          }
+        }
+      }
 
       const newNames = names.size - prevSize;
-      debug[`page${debug.pages}_new`] = newNames;
-      debug[`page${debug.pages}_included`] = data.included?.length || 0;
-
-      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${names.size}), included items: ${data.included?.length || 0}`);
-
-      // If no new names found on this page, we've exhausted results
-      if (newNames === 0) {
-        console.log('[LMH] No new names on this page, stopping pagination');
-        break;
-      }
+      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${names.size})`);
 
       start += PAGE_SIZE;
 
-      // Safety cap: don't make more than 40 requests (~2000 connections)
+      // Safety cap
       if (debug.pages >= 40) {
         console.log('[LMH] Hit safety cap of 40 pages');
         break;
       }
-    }
+
+    } while (start < pagingTotal);
 
     debug.step = 'done';
     debug.namesFound = names.size;
@@ -1143,148 +1151,6 @@ async function scrapeFullMutualConnections(onProgress) {
   }
 }
 
-/** Extract names from a single Voyager API response page into the names Set.
- *
- * LinkedIn's normalized JSON (`+json+2.1`) returns:
- *   data.data.elements[] → search clusters, each with items[]
- *   data.included[]      → flat entity store (re-includes ALL referenced entities)
- *
- * We MUST extract the profile URNs from the search result elements first,
- * then resolve those URNs in included[]. Scanning all of included[] would
- * re-count profiles from previous pages (they're always re-included).
- */
-function extractNamesFromResponse(data, names, pageNum) {
-  const before = names.size;
-
-  // ── Diagnostic: dump the actual structure on page 1 ──
-  if (pageNum === 1 && Array.isArray(data.included)) {
-    // Show a sample included item that has person-like data
-    const sampleProfile = data.included.find(i => i.firstName || i.lastName);
-    const sampleWithName = data.included.find(i =>
-      i.$type && i.$type.toLowerCase().includes('profile')
-    );
-    console.log('[LMH] Sample profile from included[]:', JSON.stringify(sampleProfile, null, 2)?.slice(0, 1000));
-    console.log('[LMH] Sample $type=profile from included[]:', JSON.stringify(sampleWithName, null, 2)?.slice(0, 1000));
-
-    // Show all unique $type values
-    const types = new Set();
-    for (const item of data.included) {
-      if (item.$type) types.add(item.$type);
-    }
-    console.log('[LMH] All $type values in included[]:', [...types]);
-
-    // Show first element structure
-    const elements = data?.data?.elements;
-    if (Array.isArray(elements) && elements.length > 0) {
-      const firstCluster = elements[0];
-      console.log('[LMH] First cluster keys:', Object.keys(firstCluster));
-      const items = firstCluster.items || firstCluster.results || [];
-      console.log('[LMH] First cluster items count:', items.length);
-      if (items.length > 0) {
-        console.log('[LMH] First item structure:', JSON.stringify(items[0], null, 2)?.slice(0, 2000));
-      }
-    }
-  }
-
-  // Build a lookup map of included entities by entityUrn and $id
-  const includedMap = new Map();
-  if (Array.isArray(data.included)) {
-    for (const item of data.included) {
-      if (item.entityUrn) includedMap.set(item.entityUrn, item);
-      if (item['$id']) includedMap.set(item['$id'], item);
-    }
-  }
-
-  // Strategy 1: Walk data.data.elements[] → items[] → extract names
-  const elements = data?.data?.elements;
-  if (Array.isArray(elements)) {
-    for (const cluster of elements) {
-      // LinkedIn may use "items" or other keys for the result list
-      const items = cluster.items || [];
-      for (const entry of items) {
-        // The entry structure varies — try multiple paths
-        const entityResult = entry?.item?.entityResult
-          || entry?.item
-          || entry?.entityResult
-          || entry;
-
-        if (!entityResult) continue;
-
-        // Method A: title.text is the display name
-        const titleText = entityResult?.title?.text?.trim();
-        if (titleText && isSearchResultName(titleText)) {
-          names.add(titleText);
-          continue;
-        }
-
-        // Method B: resolve the linked profile URN from included[]
-        const linkedUrn = entityResult['*entityUrn'] || entityResult.entityUrn
-          || entry['*entityUrn'] || entry.entityUrn;
-        if (linkedUrn) {
-          const profile = includedMap.get(linkedUrn);
-          if (profile?.firstName && profile?.lastName) {
-            names.add(`${profile.firstName} ${profile.lastName}`);
-            continue;
-          }
-          // Cross-reference: fsd_profile URN → miniProfile
-          const memberIdMatch = linkedUrn.match(/([^:]+)$/);
-          if (memberIdMatch) {
-            for (const [, entity] of includedMap) {
-              if (entity.entityUrn?.endsWith(memberIdMatch[1]) && entity.firstName && entity.lastName) {
-                names.add(`${entity.firstName} ${entity.lastName}`);
-                break;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (names.size > before) {
-    console.log(`[LMH] Strategy 1 (elements) found ${names.size - before} names`);
-    return;
-  }
-
-  // Strategy 2 (fallback): Walk data.data for title.text patterns
-  collectNamesFromSearchResults(data?.data, names);
-  if (names.size > before) {
-    console.log(`[LMH] Strategy 2 (title.text walk) found ${names.size - before} names`);
-    return;
-  }
-
-  // Strategy 3 (last resort): scan included[] for firstName+lastName
-  if (Array.isArray(data.included)) {
-    for (const item of data.included) {
-      if (item.firstName && item.lastName) {
-        names.add(`${item.firstName} ${item.lastName}`);
-      }
-    }
-  }
-  if (names.size > before) {
-    console.log(`[LMH] Strategy 3 (included[] scan) found ${names.size - before} names`);
-  } else {
-    console.warn('[LMH] All strategies found 0 names!');
-  }
-}
-
-/** Walk search result data (not included[]) for title.text name patterns. */
-function collectNamesFromSearchResults(obj, names, depth = 0) {
-  if (depth > 20 || !obj || typeof obj !== 'object') return;
-
-  if (obj.title && typeof obj.title === 'object' && typeof obj.title.text === 'string') {
-    const text = obj.title.text.trim();
-    if (isSearchResultName(text)) {
-      names.add(text);
-    }
-  }
-
-  const values = Array.isArray(obj) ? obj : Object.values(obj);
-  for (const val of values) {
-    collectNamesFromSearchResults(val, names, depth + 1);
-  }
-}
-
 /** Extract CSRF token from meta tag or JSESSIONID cookie. */
 function getCsrfToken() {
   // Try meta tag first (most reliable)
@@ -1296,22 +1162,6 @@ function getCsrfToken() {
   return match ? match[1] : null;
 }
 
-
-/** Filter out non-name strings from LinkedIn search results (subtitles, CTAs). */
-function isSearchResultName(text) {
-  return (
-    text.length > 2 &&
-    text.length < 80 &&
-    text.includes(' ') &&
-    !/^\d/.test(text) &&                        // "395 mutual connections"
-    !/mutual\s+connection/i.test(text) &&        // subtitle
-    !/\d+\s*K?\s*follower/i.test(text) &&        // "9K followers"
-    !/^Search\s+with/i.test(text) &&             // "Search with Sales Navigator"
-    !/^View\s+my/i.test(text) &&                 // "View my services"
-    !/^Try\s/i.test(text) &&                     // "Try Premium"
-    !/^Get\s+introduced/i.test(text)             // CTA text
-  );
-}
 
 // ── Message generation (AI calls) ──────────────────────────────────
 async function generateMessages({ profileData, tones, apiKey, apiProvider, aiModel, userBackground, language }) {

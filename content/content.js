@@ -306,18 +306,41 @@ function displayMessagesInPanel(_container, messages) {
       : '{ "count": 0, "names": [] }';
     qaPanel.innerHTML = `
       <div class="lmh-qa-section">
-        <div class="lmh-qa-label">Mutual Connections (scraped)</div>
-        <pre class="lmh-qa-pre">${escapeHTML(mutualDebug)}</pre>
+        <div class="lmh-qa-label-row">
+          <span class="lmh-qa-label">Mutual Connections (scraped)</span>
+          <button class="lmh-qa-copy-btn" data-copy="mutual">Copy</button>
+        </div>
+        <pre class="lmh-qa-pre lmh-qa-pre-scroll">${escapeHTML(mutualDebug)}</pre>
       </div>
       <div class="lmh-qa-section">
-        <div class="lmh-qa-label">System Prompt</div>
+        <div class="lmh-qa-label-row">
+          <span class="lmh-qa-label">System Prompt</span>
+          <button class="lmh-qa-copy-btn" data-copy="system">Copy</button>
+        </div>
         <pre class="lmh-qa-pre">${escapeHTML(lastPrompts.system)}</pre>
       </div>
       <div class="lmh-qa-section">
-        <div class="lmh-qa-label">User Prompt</div>
+        <div class="lmh-qa-label-row">
+          <span class="lmh-qa-label">User Prompt</span>
+          <button class="lmh-qa-copy-btn" data-copy="user">Copy</button>
+        </div>
         <pre class="lmh-qa-pre">${escapeHTML(lastPrompts.user)}</pre>
       </div>
     `;
+
+    // Bind copy buttons
+    const copyData = { mutual: mutualDebug, system: lastPrompts.system, user: lastPrompts.user };
+    qaPanel.querySelectorAll('.lmh-qa-copy-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(copyData[btn.dataset.copy]);
+        btn.textContent = 'Copied!';
+        btn.classList.add('lmh-qa-copy-done');
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('lmh-qa-copy-done');
+        }, 2000);
+      });
+    });
   }
 
   modal.appendChild(qaPanel);

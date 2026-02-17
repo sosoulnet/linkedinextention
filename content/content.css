@@ -475,15 +475,45 @@
   overflow: hidden;
 }
 
+.lmh-qa-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px 6px 14px;
+  background: #e8f0fe;
+  border-bottom: 1px solid #e0dfdc;
+}
+
 .lmh-qa-label {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: #0a66c2;
-  padding: 8px 14px;
-  background: #e8f0fe;
-  border-bottom: 1px solid #e0dfdc;
+}
+
+.lmh-qa-copy-btn {
+  background: white;
+  border: 1.5px solid #c8d6e5;
+  border-radius: 8px;
+  padding: 2px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.lmh-qa-copy-btn:hover {
+  border-color: #0a66c2;
+  color: #0a66c2;
+}
+
+.lmh-qa-copy-btn.lmh-qa-copy-done {
+  background: #057642;
+  color: white;
+  border-color: #057642;
 }
 
 .lmh-qa-pre {
@@ -497,6 +527,10 @@
   font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Consolas', monospace;
   max-height: 280px;
   overflow-y: auto;
+}
+
+.lmh-qa-pre-scroll {
+  max-height: 160px;
 }
 
 /* ── Notification toast ─────────────────────────────────────────── */

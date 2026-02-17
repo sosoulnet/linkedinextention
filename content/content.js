@@ -752,7 +752,7 @@ Requirements:
 - Incorporate specific details from their profile where relevant to make messages feel personal${userBackground ? '\n- Naturally tie in my background — the message should make it clear why I\'m reaching out based on who I am and what I do' : ''}${profileData.mutualConnections?.count > 0 ? '\n- We have mutual connections — when appropriate, mention or reference our shared network to build trust and credibility. If specific mutual connection names are listed, you may naturally reference them (e.g. "I noticed we\'re both connected with [Name]")' : ''}
 - Messages should motivate the recipient to respond
 - Keep messages natural — avoid sounding like a template or bot
-- Do not use generic flattery${language && language !== 'english' ? `\n- IMPORTANT: Write all message texts in ${language}` : ''}
+- Do not use generic flattery${language && language !== 'english' ? `\n- IMPORTANT: Write the ENTIRE message in ${language}, including translating all names, titles, company names, and technical terms. The whole response must be fully in ${language} with no English words.` : ''}
 
 Respond in this exact JSON format only, with no other text:
 [{"tone": "tone_name", "text": "message text"}, ...]`;

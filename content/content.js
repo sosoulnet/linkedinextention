@@ -1103,7 +1103,7 @@ async function scrapeFullMutualConnections(onProgress) {
       const prevSize = names.size;
 
       // Extract names from this page
-      extractNamesFromResponse(data, names);
+      extractNamesFromResponse(data, names, debug.pages);
 
       const newNames = names.size - prevSize;
       debug[`page${debug.pages}_new`] = newNames;
@@ -1153,28 +1153,61 @@ async function scrapeFullMutualConnections(onProgress) {
  * then resolve those URNs in included[]. Scanning all of included[] would
  * re-count profiles from previous pages (they're always re-included).
  */
-function extractNamesFromResponse(data, names) {
+function extractNamesFromResponse(data, names, pageNum) {
   const before = names.size;
 
-  // Build a lookup map of included entities by entityUrn
+  // ── Diagnostic: dump the actual structure on page 1 ──
+  if (pageNum === 1 && Array.isArray(data.included)) {
+    // Show a sample included item that has person-like data
+    const sampleProfile = data.included.find(i => i.firstName || i.lastName);
+    const sampleWithName = data.included.find(i =>
+      i.$type && i.$type.toLowerCase().includes('profile')
+    );
+    console.log('[LMH] Sample profile from included[]:', JSON.stringify(sampleProfile, null, 2)?.slice(0, 1000));
+    console.log('[LMH] Sample $type=profile from included[]:', JSON.stringify(sampleWithName, null, 2)?.slice(0, 1000));
+
+    // Show all unique $type values
+    const types = new Set();
+    for (const item of data.included) {
+      if (item.$type) types.add(item.$type);
+    }
+    console.log('[LMH] All $type values in included[]:', [...types]);
+
+    // Show first element structure
+    const elements = data?.data?.elements;
+    if (Array.isArray(elements) && elements.length > 0) {
+      const firstCluster = elements[0];
+      console.log('[LMH] First cluster keys:', Object.keys(firstCluster));
+      const items = firstCluster.items || firstCluster.results || [];
+      console.log('[LMH] First cluster items count:', items.length);
+      if (items.length > 0) {
+        console.log('[LMH] First item structure:', JSON.stringify(items[0], null, 2)?.slice(0, 2000));
+      }
+    }
+  }
+
+  // Build a lookup map of included entities by entityUrn and $id
   const includedMap = new Map();
   if (Array.isArray(data.included)) {
     for (const item of data.included) {
       if (item.entityUrn) includedMap.set(item.entityUrn, item);
-      // Also index by $id or *entityUrn formats
       if (item['$id']) includedMap.set(item['$id'], item);
     }
   }
 
-  // Strategy 1: Walk data.data.elements[] → items[] → extract profile URNs
-  // and resolve them in the included map. This gives us ONLY this page's results.
+  // Strategy 1: Walk data.data.elements[] → items[] → extract names
   const elements = data?.data?.elements;
   if (Array.isArray(elements)) {
     for (const cluster of elements) {
+      // LinkedIn may use "items" or other keys for the result list
       const items = cluster.items || [];
       for (const entry of items) {
-        // Each item can have: item.entityResult or item.entityResult.*title
-        const entityResult = entry?.item?.entityResult;
+        // The entry structure varies — try multiple paths
+        const entityResult = entry?.item?.entityResult
+          || entry?.item
+          || entry?.entityResult
+          || entry;
+
         if (!entityResult) continue;
 
         // Method A: title.text is the display name
@@ -1185,18 +1218,15 @@ function extractNamesFromResponse(data, names) {
         }
 
         // Method B: resolve the linked profile URN from included[]
-        // entityResult has "*entityUrn" or "entityUrn" pointing to a profile
-        const linkedUrn = entityResult['*entityUrn'] || entityResult.entityUrn;
+        const linkedUrn = entityResult['*entityUrn'] || entityResult.entityUrn
+          || entry['*entityUrn'] || entry.entityUrn;
         if (linkedUrn) {
-          // The profile URN might be like "urn:li:fsd_profile:ABC"
-          // but included[] may have it as miniProfile with a different prefix.
-          // Try direct lookup and also search for the member ID part.
           const profile = includedMap.get(linkedUrn);
           if (profile?.firstName && profile?.lastName) {
             names.add(`${profile.firstName} ${profile.lastName}`);
             continue;
           }
-          // Try finding by member ID suffix
+          // Cross-reference: fsd_profile URN → miniProfile
           const memberIdMatch = linkedUrn.match(/([^:]+)$/);
           if (memberIdMatch) {
             for (const [, entity] of includedMap) {
@@ -1211,20 +1241,30 @@ function extractNamesFromResponse(data, names) {
     }
   }
 
-  if (names.size > before) return;
+  if (names.size > before) {
+    console.log(`[LMH] Strategy 1 (elements) found ${names.size - before} names`);
+    return;
+  }
 
-  // Strategy 2 (fallback): Walk JSON tree for title.text in search results
+  // Strategy 2 (fallback): Walk data.data for title.text patterns
   collectNamesFromSearchResults(data?.data, names);
-  if (names.size > before) return;
+  if (names.size > before) {
+    console.log(`[LMH] Strategy 2 (title.text walk) found ${names.size - before} names`);
+    return;
+  }
 
-  // Strategy 3 (last resort): scan included[] — only useful for first page
-  // when the response structure is unexpected
+  // Strategy 3 (last resort): scan included[] for firstName+lastName
   if (Array.isArray(data.included)) {
     for (const item of data.included) {
       if (item.firstName && item.lastName) {
         names.add(`${item.firstName} ${item.lastName}`);
       }
     }
+  }
+  if (names.size > before) {
+    console.log(`[LMH] Strategy 3 (included[] scan) found ${names.size - before} names`);
+  } else {
+    console.warn('[LMH] All strategies found 0 names!');
   }
 }
 

@@ -808,9 +808,10 @@ async function openMutualFriendsModal() {
 }
 
 // ── Helper: send message from the page's main world context ───────
-// This ensures the fetch goes through LinkedIn's own service workers,
-// fetch interceptors, and adds any missing required headers automatically.
-function sendViaPageContext(recipientId, fsdId, messageText, csrfToken) {
+// Communicates with mainworld.js (registered with world: "MAIN" in manifest)
+// via postMessage. The main world script makes fetch calls through LinkedIn's
+// own service workers, which add all necessary auth headers.
+function sendViaPageContext(recipientId, fsdId, messageText) {
   return new Promise((resolve, reject) => {
     const cbId = 'lmh_' + Date.now() + '_' + Math.random().toString(36).slice(2);
 
@@ -822,114 +823,20 @@ function sendViaPageContext(recipientId, fsdId, messageText, csrfToken) {
     }
     window.addEventListener('message', onMessage);
 
-    // Build script to run in the page's main world
-    const scriptCode = `(async function(){
-      try {
-        var csrf = document.cookie.match(/JSESSIONID="?([^";]+)"?/);
-        csrf = csrf ? csrf[1] : ${JSON.stringify(csrfToken)};
-        var liTrack = JSON.stringify({
-          clientVersion:'1.13.8031',mpVersion:'1.13.8031',osName:'web',
-          timezoneOffset:new Date().getTimezoneOffset(),
-          timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'Etc/UTC',
-          deviceFormFactor:'DESKTOP',mpName:'voyager-web'
-        });
-        var hdrs = {
-          'csrf-token': csrf,
-          'accept': 'application/vnd.linkedin.normalized+json+2.1',
-          'content-type': 'application/json; charset=UTF-8',
-          'x-restli-protocol-version': '2.0.0',
-          'x-li-lang': 'en_US',
-          'x-li-track': liTrack
-        };
-        var msg = ${JSON.stringify(messageText)};
-        var mc = {body:msg, attributedBody:{text:msg,attributes:[]}, attachments:[]};
-        var ev = {eventCreate:{value:{'com.linkedin.voyager.messaging.create.MessageCreate':mc}}};
-
-        var strategies = [
-          ['memberUrn',
-           '/voyager/api/messaging/conversations?action=create',
-           JSON.stringify({keyVersion:'LEGACY_INBOX',conversationCreate:{...ev,recipients:['urn:li:member:'+${JSON.stringify(recipientId)}],subtype:'MEMBER_TO_MEMBER'}})],
-          ['legacy('+${JSON.stringify(recipientId)}+')',
-           '/voyager/api/messaging/conversations?action=create',
-           JSON.stringify({keyVersion:'LEGACY_INBOX',conversationCreate:{...ev,recipients:[${JSON.stringify(recipientId)}],subtype:'MEMBER_TO_MEMBER'}})],
-          ['miniProfile',
-           '/voyager/api/messaging/conversations?action=create',
-           JSON.stringify({keyVersion:'LEGACY_INBOX',conversationCreate:{...ev,recipients:['urn:li:fs_miniProfile:'+${JSON.stringify(fsdId)}],subtype:'MEMBER_TO_MEMBER'}})],
-          ['dash',
-           '/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage',
-           JSON.stringify({dedupeByClientGeneratedToken:false,message:{body:{text:msg,attributes:[]},renderContentUnions:[]},hostRecipientUrns:['urn:li:fsd_profile:'+${JSON.stringify(fsdId)}]})],
-        ];
-
-        var errs = [];
-        for (var s of strategies) {
-          try {
-            var resp = await fetch(s[1], {method:'POST',headers:hdrs,credentials:'include',body:s[2]});
-            if (resp.ok || resp.status === 201) {
-              window.postMessage({type:${JSON.stringify(cbId)},ok:true},'*');
-              return;
-            }
-            var t = await resp.text();
-            errs.push(s[0]+' '+resp.status+': '+t.slice(0,200));
-          } catch(ex) {
-            errs.push(s[0]+' err: '+ex.message);
-          }
-        }
-        window.postMessage({type:${JSON.stringify(cbId)},ok:false,error:errs.join(' | ')},'*');
-      } catch(e) {
-        window.postMessage({type:${JSON.stringify(cbId)},ok:false,error:e.message},'*');
-      }
-    })();`;
-
-    // Try ALL injection methods — CSP blocks are async (onerror), so we
-    // can't know synchronously if a method worked.  The first script that
-    // actually executes will send the postMessage response; duplicates are
-    // harmless because the listener removes itself on the first message.
-
-    // Method 1: blob URL
-    try {
-      const blob = new Blob([scriptCode], { type: 'text/javascript' });
-      const blobUrl = URL.createObjectURL(blob);
-      const el = document.createElement('script');
-      el.src = blobUrl;
-      el.onerror = () => console.warn('[LMH] blob: script blocked by CSP');
-      document.head.appendChild(el);
-      el.remove();
-      URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      console.warn('[LMH] blob injection failed:', e);
-    }
-
-    // Method 2: inline script
-    try {
-      const el = document.createElement('script');
-      el.textContent = scriptCode;
-      document.head.appendChild(el);
-      el.remove();
-    } catch (e) {
-      console.warn('[LMH] inline injection failed:', e);
-    }
-
-    // Method 3: chrome.scripting.executeScript via background service worker
-    //           (most reliable — bypasses all CSP restrictions)
-    try {
-      console.log('[LMH] Requesting chrome.scripting.executeScript via background…');
-      chrome.runtime.sendMessage(
-        { type: 'lmh-exec-main-world', code: scriptCode },
-        (resp) => {
-          if (chrome.runtime.lastError) {
-            console.warn('[LMH] Background exec failed:', chrome.runtime.lastError.message);
-          }
-          // Response comes via postMessage from the injected script, not here
-        }
-      );
-    } catch (e) {
-      console.warn('[LMH] Background exec request failed:', e);
-    }
+    // Send request to main world script
+    console.log('[LMH] Sending message request to main world script…');
+    window.postMessage({
+      type: 'lmh-send-message',
+      cbId,
+      recipientId: String(recipientId),
+      fsdId: String(fsdId),
+      messageText,
+    }, '*');
 
     // Timeout after 20 seconds
     setTimeout(() => {
       window.removeEventListener('message', onMessage);
-      reject(new Error('Page context send timed out'));
+      reject(new Error('Page context send timed out — main world script may not be loaded'));
     }, 20000);
   });
 }
@@ -1122,8 +1029,21 @@ async function sendLinkedInMessage(recipientName, messageText) {
   const legacyUrl = 'https://www.linkedin.com/voyager/api/messaging/conversations?action=create';
   const dashUrl = 'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
 
-  // 2a. Try finding an existing conversation and posting to it
-  //     This is more reliable than creating a new conversation.
+  // 2a. BEST: send via main world script (mainworld.js)
+  //     Runs fetch through LinkedIn's own service workers which add
+  //     all required auth headers automatically.
+  const bestRecipient = numericMemberId || memberId;
+  try {
+    console.log('[LMH] Trying send via main world script (primary)…');
+    await sendViaPageContext(bestRecipient, memberId, messageText);
+    console.log('[LMH] Message sent via main world script!');
+    return;
+  } catch (e) {
+    errors.push(`main-world: ${e.message}`);
+    console.warn('[LMH] Main world send failed:', e);
+  }
+
+  // 2b. Fallback: try content-script fetch with existing conversation
   const recipientId = numericMemberId || memberId;
   try {
     console.log(`[LMH] Looking for existing conversation with ${recipientId}…`);
@@ -1152,7 +1072,7 @@ async function sendLinkedInMessage(recipientName, messageText) {
         console.log('[LMH] Conversation entity:', convId, 'keys:', Object.keys(conv));
         const convKey = (convId || '').replace(/^urn:li:(fs_conversation|msg_conversation):/, '');
         if (convKey) {
-          console.log(`[LMH] Found existing conversation: ${convKey}`);
+          console.log(`[LMH] Sending to existing conversation: ${convKey}`);
           const eventBody = JSON.stringify({
             eventCreate: {
               value: {
@@ -1167,7 +1087,7 @@ async function sendLinkedInMessage(recipientName, messageText) {
           if (await trySend('existing-conv', `https://www.linkedin.com/voyager/api/messaging/conversations/${convKey}/events?action=create`, eventBody)) return;
         }
       } else {
-        console.log('[LMH] No existing conversation found — this person may not be a 1st-degree connection');
+        console.log('[LMH] No existing conversation found');
       }
     } else {
       const errText = await convResp.text();
@@ -1177,21 +1097,12 @@ async function sendLinkedInMessage(recipientName, messageText) {
     console.warn('[LMH] Existing conversation lookup failed:', e);
   }
 
-  // 2b. Legacy with urn:li:member:numericId format
+  // 2c. Fallback: direct content-script API calls
   if (numericMemberId) {
     if (await trySend('legacy(memberUrn)', legacyUrl, legacyPayload([`urn:li:member:${numericMemberId}`]))) return;
   }
-
-  // 2c. Legacy with numeric member ID
-  if (numericMemberId) {
-    if (await trySend('legacy(numericId)', legacyUrl, legacyPayload([numericMemberId]))) return;
-  }
-
-  // 2d. Legacy with miniProfile URN
   if (await trySend('legacy(miniProfile)', legacyUrl,
     legacyPayload([`urn:li:fs_miniProfile:${memberId}`]))) return;
-
-  // 2e. Dash API with fsd_profile URN
   if (await trySend('dash(fsd)', dashUrl, JSON.stringify({
     dedupeByClientGeneratedToken: false,
     message: {
@@ -1201,35 +1112,6 @@ async function sendLinkedInMessage(recipientName, messageText) {
     hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
   }))) return;
 
-  // 2f. Dash API with member URN
-  if (numericMemberId) {
-    if (await trySend('dash(member)', dashUrl, JSON.stringify({
-      dedupeByClientGeneratedToken: false,
-      message: {
-        body: { text: messageText, attributes: [] },
-        renderContentUnions: [],
-      },
-      hostRecipientUrns: [`urn:li:member:${numericMemberId}`],
-    }))) return;
-  }
-
-  // 2g. Last resort: send from page's main world context via background script
-  try {
-    console.log('[LMH] Trying send from page context (main world)…');
-    const bestRecipient = numericMemberId || memberId;
-    await sendViaPageContext(bestRecipient, memberId, messageText, csrfToken);
-    console.log('[LMH] Message sent via page context!');
-    return;
-  } catch (e) {
-    errors.push(`page-ctx: ${e.message}`);
-    console.warn('[LMH] Page context send failed:', e);
-  }
-
-  // Check if the failure is because the person isn't a 1st-degree connection
-  const allForbidden = errors.every(e => e.includes('403') || e.includes('timed out'));
-  if (allForbidden) {
-    throw new Error(`Cannot message "${recipientName}" — they may not be a 1st-degree connection. If the mutual connections list contained wrong names, please re-scrape.`);
-  }
   throw new Error(`Send failed: ${errors.join(' | ')}`);
 }
 

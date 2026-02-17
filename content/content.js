@@ -1188,7 +1188,7 @@ async function scrapeFullMutualConnections(onProgress) {
         console.log('[LMH] API URL:', apiUrl);
       }
 
-      console.log(`[LMH] Fetching page ${debug.pages + 1}, start=${start}, names so far=${names.size}`);
+      console.log(`[LMH] Fetching page ${debug.pages + 1}, start=${start}, names so far=${nameToUrn.size}`);
       if (onProgress) onProgress(nameToUrn.size, debug.pages + 1);
 
       const resp = await fetch(apiUrl, {
@@ -1207,7 +1207,7 @@ async function scrapeFullMutualConnections(onProgress) {
         const errText = await resp.text();
         debug.errorBody = errText.slice(0, 1000);
         console.warn(`[LMH] API error on page ${debug.pages + 1}: ${resp.status}`);
-        if (names.size > 0) break;
+        if (nameToUrn.size > 0) break;
         return { names: null, debug };
       }
 

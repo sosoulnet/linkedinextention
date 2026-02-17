@@ -689,7 +689,7 @@ function collectNamesFromJSON(obj, names, depth = 0) {
 
   if (obj.title && typeof obj.title === 'object' && typeof obj.title.text === 'string') {
     const text = obj.title.text.trim();
-    if (text.length > 2 && text.length < 60 && text.includes(' ')) {
+    if (isSearchResultName(text)) {
       names.add(text);
     }
   }
@@ -698,6 +698,22 @@ function collectNamesFromJSON(obj, names, depth = 0) {
   for (const val of values) {
     collectNamesFromJSON(val, names, depth + 1);
   }
+}
+
+/** Filter out non-name strings from LinkedIn search results (subtitles, CTAs). */
+function isSearchResultName(text) {
+  return (
+    text.length > 2 &&
+    text.length < 80 &&
+    text.includes(' ') &&
+    !/^\d/.test(text) &&                        // "395 mutual connections"
+    !/mutual\s+connection/i.test(text) &&        // subtitle
+    !/\d+\s*K?\s*follower/i.test(text) &&        // "9K followers"
+    !/^Search\s+with/i.test(text) &&             // "Search with Sales Navigator"
+    !/^View\s+my/i.test(text) &&                 // "View my services"
+    !/^Try\s/i.test(text) &&                     // "Try Premium"
+    !/^Get\s+introduced/i.test(text)             // CTA text
+  );
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────

@@ -739,8 +739,18 @@ async function openMutualFriendsModal() {
           console.error(`Failed to send to ${friendName}:`, err);
           row.dataset.status = 'error';
           btn.textContent = 'Retry';
+          btn.title = err.message; // show error on hover
           btn.disabled = false;
           btn.classList.add('lmh-error-btn');
+          // Show error below the textarea
+          let errEl = row.querySelector('.lmh-send-error');
+          if (!errEl) {
+            errEl = document.createElement('div');
+            errEl.className = 'lmh-send-error';
+            errEl.style.cssText = 'color:#e74c3c;font-size:11px;margin-top:4px;word-break:break-all;';
+            row.appendChild(errEl);
+          }
+          errEl.textContent = err.message;
         }
       });
     });
@@ -803,12 +813,19 @@ async function sendLinkedInMessage(recipientName, messageText) {
   const csrfToken = getCsrfToken();
   if (!csrfToken) throw new Error('No CSRF token found');
 
-  // 1. Try to use the stored URN from the mutual connections scrape
-  let profileUrn = profileData?.mutualConnections?.nameToUrn?.get(recipientName) || null;
-  console.log(`[LMH] Stored URN for "${recipientName}":`, profileUrn);
+  // 1. Resolve the member ID for the recipient
+  let memberId = null;
 
-  // 2. Fallback: search for the person by name
-  if (!profileUrn) {
+  // 1a. Try stored URN from mutual connections scrape
+  const storedUrn = profileData?.mutualConnections?.nameToUrn?.get(recipientName) || null;
+  console.log(`[LMH] Stored URN for "${recipientName}":`, storedUrn);
+  if (storedUrn) {
+    const m = storedUrn.match(/fsd_profile:([A-Za-z0-9_-]+)/);
+    if (m) memberId = m[1];
+  }
+
+  // 1b. Fallback: search by name and regex the entire response for an fsd_profile URN
+  if (!memberId) {
     console.log(`[LMH] No stored URN, searching for "${recipientName}"…`);
     const searchUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
       + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
@@ -827,101 +844,100 @@ async function sendLinkedInMessage(recipientName, messageText) {
 
     if (!searchResp.ok) throw new Error(`Search failed: ${searchResp.status}`);
 
-    const searchData = await searchResp.json();
-
-    // Try multiple strategies to find the profile URN
-    if (Array.isArray(searchData.included)) {
-      for (const item of searchData.included) {
-        // Direct profile type
-        if (item.$type === 'com.linkedin.voyager.dash.identity.profile.Profile'
-          || (item.firstName && item.lastName && item.entityUrn)) {
-          profileUrn = item.entityUrn;
-          break;
-        }
-        // Any fsd_profile URN (since we searched count=1, it should be the right person)
-        if (item.entityUrn?.includes('fsd_profile') && !item.entityUrn.includes(',')) {
-          profileUrn = item.entityUrn;
-          break;
-        }
-      }
-      // Last resort: regex the entire response for an fsd_profile URN
-      if (!profileUrn) {
-        const str = JSON.stringify(searchData);
-        const m = str.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
-        if (m) profileUrn = `urn:li:fsd_profile:${m[1]}`;
-      }
+    const searchStr = await searchResp.text();
+    console.log(`[LMH] Search response length: ${searchStr.length}`);
+    // Find the first fsd_profile URN in the response
+    const m = searchStr.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+    if (m) {
+      memberId = m[1];
+      console.log(`[LMH] Search found memberId: ${memberId}`);
+    } else {
+      console.log(`[LMH] No fsd_profile URN in search response, first 500 chars:`, searchStr.slice(0, 500));
     }
-    console.log(`[LMH] Search found URN:`, profileUrn);
   }
 
-  if (!profileUrn) throw new Error('Could not find profile for: ' + recipientName);
+  if (!memberId) throw new Error('Could not find profile for: ' + recipientName);
+  console.log(`[LMH] Resolved memberId="${memberId}" for "${recipientName}"`);
 
-  // 3. Extract the member ID from the URN
-  const memberMatch = profileUrn.match(/fsd_profile:(.+)/);
-  if (!memberMatch) throw new Error('Invalid profile URN: ' + profileUrn);
-  const memberId = memberMatch[1];
-  console.log(`[LMH] Sending message to memberId="${memberId}"…`);
+  // 2. Send the message — try legacy conversations endpoint first (most reliable)
+  const errors = [];
 
-  // 4. Send the message using the messaging API
-  //    Try the newer dash endpoint first, fall back to the legacy one
-  const endpoints = [
-    'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage',
-    'https://www.linkedin.com/voyager/api/messaging/conversations',
-  ];
-
-  let lastError = null;
-  for (const msgUrl of endpoints) {
-    const isLegacy = msgUrl.includes('/messaging/conversations');
-
-    const payload = isLegacy
-      ? {
-          // Legacy messaging API format
-          keyVersion: 'LEGACY_INBOX',
-          conversationCreate: {
-            eventCreate: { value: { 'com.linkedin.voyager.messaging.create.MessageCreate': { body: messageText, attachments: [] } } },
-            recipients: [memberId],
-            subtype: 'MEMBER_TO_MEMBER',
+  // 2a. Legacy messaging API
+  try {
+    console.log('[LMH] Trying legacy /messaging/conversations …');
+    const legacyResp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations', {
+      method: 'POST',
+      headers: {
+        'csrf-token': csrfToken,
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        'content-type': 'application/json; charset=UTF-8',
+        'x-restli-protocol-version': '2.0.0',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        keyVersion: 'LEGACY_INBOX',
+        conversationCreate: {
+          eventCreate: {
+            value: {
+              'com.linkedin.voyager.messaging.create.MessageCreate': {
+                body: messageText,
+                attachments: [],
+              },
+            },
           },
-        }
-      : {
-          // Newer dash messaging format
-          dedupeByClientGeneratedToken: false,
-          mailboxUrn: 'urn:li:fsd_profile:me',
-          message: {
-            body: { text: messageText },
-            renderContentUnions: [],
-          },
-          hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
-        };
-
-    try {
-      const msgResp = await fetch(msgUrl, {
-        method: 'POST',
-        headers: {
-          'csrf-token': csrfToken,
-          'accept': 'application/vnd.linkedin.normalized+json+2.1',
-          'content-type': 'application/json; charset=UTF-8',
-          'x-restli-protocol-version': '2.0.0',
+          recipients: [memberId],
+          subtype: 'MEMBER_TO_MEMBER',
         },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      });
+      }),
+    });
 
-      if (msgResp.ok) {
-        console.log(`[LMH] Message sent successfully via ${isLegacy ? 'legacy' : 'dash'} API`);
-        return;
-      }
-
-      const errText = await msgResp.text();
-      lastError = `${msgUrl} → ${msgResp.status}: ${errText.slice(0, 200)}`;
-      console.warn(`[LMH] Message endpoint failed: ${lastError}`);
-    } catch (e) {
-      lastError = `${msgUrl} → ${e.message}`;
-      console.warn(`[LMH] Message endpoint error: ${lastError}`);
+    if (legacyResp.ok || legacyResp.status === 201) {
+      console.log('[LMH] Message sent via legacy API!');
+      return;
     }
+    const errText = await legacyResp.text();
+    errors.push(`legacy ${legacyResp.status}: ${errText.slice(0, 300)}`);
+    console.warn(`[LMH] Legacy API failed: ${legacyResp.status}`, errText.slice(0, 300));
+  } catch (e) {
+    errors.push(`legacy error: ${e.message}`);
+    console.warn('[LMH] Legacy API error:', e);
   }
 
-  throw new Error(`Message send failed: ${lastError}`);
+  // 2b. Dash messaging API
+  try {
+    console.log('[LMH] Trying dash messaging API …');
+    const dashResp = await fetch('https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage', {
+      method: 'POST',
+      headers: {
+        'csrf-token': csrfToken,
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        'content-type': 'application/json; charset=UTF-8',
+        'x-restli-protocol-version': '2.0.0',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        dedupeByClientGeneratedToken: false,
+        message: {
+          body: { text: messageText },
+          renderContentUnions: [],
+        },
+        hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
+      }),
+    });
+
+    if (dashResp.ok || dashResp.status === 201) {
+      console.log('[LMH] Message sent via dash API!');
+      return;
+    }
+    const errText = await dashResp.text();
+    errors.push(`dash ${dashResp.status}: ${errText.slice(0, 300)}`);
+    console.warn(`[LMH] Dash API failed: ${dashResp.status}`, errText.slice(0, 300));
+  } catch (e) {
+    errors.push(`dash error: ${e.message}`);
+    console.warn('[LMH] Dash API error:', e);
+  }
+
+  throw new Error(`Send failed: ${errors.join(' | ')}`);
 }
 
 // ── Profile extraction ─────────────────────────────────────────────
@@ -1266,15 +1282,20 @@ async function scrapeFullMutualConnections(onProgress) {
           if (key) entityMap[key] = item;
         }
 
-        // Helper: extract fsd_profile URN from an entity or its navigation URL
+        // Helper: extract fsd_profile URN from an entity
         function extractProfileUrn(item) {
           if (!item) return null;
-          // Direct entityUrn
-          if (item.entityUrn?.includes('fsd_profile')) return item.entityUrn;
-          // Navigation URL like /in/username → not a URN, skip
-          // Check nested references
-          const navUrn = item.navigationUrn || item['*navigationUrn'];
-          if (navUrn?.includes('fsd_profile')) return navUrn;
+          // Check all string values on the item for an fsd_profile URN
+          for (const val of Object.values(item)) {
+            if (typeof val === 'string') {
+              const m = val.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+              if (m) return `urn:li:fsd_profile:${m[1]}`;
+            }
+          }
+          // Deep check: stringify the item and regex for fsd_profile
+          const str = JSON.stringify(item);
+          const m = str.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+          if (m) return `urn:li:fsd_profile:${m[1]}`;
           return null;
         }
 
@@ -1337,7 +1358,13 @@ async function scrapeFullMutualConnections(onProgress) {
       }
 
       const newNames = nameToUrn.size - prevSize;
-      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${nameToUrn.size})`);
+      const withUrns = [...nameToUrn.values()].filter(Boolean).length;
+      console.log(`[LMH] Page ${debug.pages}: +${newNames} names (total: ${nameToUrn.size}, ${withUrns} with URNs)`);
+      // On first page, log a sample entry
+      if (debug.pages === 1 && nameToUrn.size > 0) {
+        const [sampleName, sampleUrn] = [...nameToUrn.entries()][0];
+        console.log(`[LMH] Sample: "${sampleName}" → ${sampleUrn}`);
+      }
 
       start += PAGE_SIZE;
 

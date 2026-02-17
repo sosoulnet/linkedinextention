@@ -807,6 +807,193 @@ async function openMutualFriendsModal() {
   });
 }
 
+// ── Helper: send message by automating LinkedIn's messaging UI ────
+// Uses the "New message" compose overlay at the bottom of the page.
+// This works regardless of API changes because it drives LinkedIn's own UI.
+async function sendViaUI(recipientName, messageText) {
+  console.log(`[LMH] sendViaUI: composing message for "${recipientName}"…`);
+
+  // Step 1: Open the "New message" compose overlay
+  //         Click the compose (pencil) icon in the messaging bar
+  let composeBtn = document.querySelector(
+    'button.msg-overlay-list-bubble__compose-btn, ' +
+    'button[data-control-name="overlay.compose_message"], ' +
+    'a.msg-overlay-list-bubble__compose-btn'
+  );
+
+  // If the messaging bar isn't visible, try clicking the messaging icon first
+  if (!composeBtn) {
+    const msgIcon = document.querySelector(
+      'button.msg-overlay-bubble-header__button, ' +
+      '.msg-overlay-list-bubble-header button, ' +
+      '#msg-overlay .msg-overlay-bubble-header button'
+    );
+    if (msgIcon) {
+      msgIcon.click();
+      await sleep(500);
+      composeBtn = document.querySelector(
+        'button.msg-overlay-list-bubble__compose-btn, ' +
+        'button[data-control-name="overlay.compose_message"], ' +
+        'a.msg-overlay-list-bubble__compose-btn'
+      );
+    }
+  }
+
+  // Broader search: any button with pencil icon / compose text in the messaging area
+  if (!composeBtn) {
+    const msgOverlay = document.querySelector('.msg-overlay-list-bubble, #msg-overlay');
+    if (msgOverlay) {
+      const btns = msgOverlay.querySelectorAll('button, a');
+      for (const b of btns) {
+        const label = (b.getAttribute('aria-label') || b.textContent || '').toLowerCase();
+        if (label.includes('compose') || label.includes('new message') || label.includes('write')) {
+          composeBtn = b;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!composeBtn) {
+    throw new Error('Could not find compose button in messaging bar');
+  }
+
+  composeBtn.click();
+  console.log('[LMH] Clicked compose button');
+  await sleep(800);
+
+  // Step 2: Type recipient name in the "To" typeahead field
+  const toInput = await waitForElement(
+    'input.msg-connections-typeahead__search-field, ' +
+    'input[role="combobox"][placeholder*="name"], ' +
+    'input.msg-compose-typeahead-input, ' +
+    '.msg-compose-form input[type="text"], ' +
+    '.msg-connections-typeahead input',
+    5000
+  );
+  if (!toInput) {
+    throw new Error('Could not find the "To" recipient input field');
+  }
+
+  toInput.focus();
+  await sleep(200);
+
+  // Type the name character by character to trigger the typeahead
+  toInput.value = '';
+  toInput.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(100);
+
+  for (const char of recipientName) {
+    toInput.value += char;
+    toInput.dispatchEvent(new Event('input', { bubbles: true }));
+    toInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(50);
+  }
+
+  console.log(`[LMH] Typed "${recipientName}" in To field`);
+  await sleep(1000); // wait for typeahead suggestions to load
+
+  // Step 3: Select the first matching suggestion
+  const suggestion = await waitForElement(
+    '.msg-connections-typeahead__suggestion-item button, ' +
+    '.basic-typeahead__selectable button, ' +
+    'ul[role="listbox"] li button, ' +
+    '.msg-connections-typeahead__results-list li button, ' +
+    '.msg-compose-typeahead-results li, ' +
+    '[role="option"]',
+    5000
+  );
+  if (!suggestion) {
+    throw new Error(`No suggestions found for "${recipientName}" — they may not be a 1st-degree connection`);
+  }
+
+  suggestion.click();
+  console.log('[LMH] Selected recipient from suggestions');
+  await sleep(500);
+
+  // Step 4: Type the message in the compose body
+  const composeBody = await waitForElement(
+    'div.msg-form__contenteditable[contenteditable="true"], ' +
+    'div[role="textbox"][contenteditable="true"], ' +
+    '.msg-form__msg-content-container div[contenteditable="true"]',
+    5000
+  );
+  if (!composeBody) {
+    throw new Error('Could not find message compose body');
+  }
+
+  composeBody.focus();
+  await sleep(200);
+  composeBody.innerHTML = '';
+  document.execCommand('insertText', false, messageText);
+  composeBody.dispatchEvent(new Event('input', { bubbles: true }));
+
+  console.log('[LMH] Message typed into compose body');
+  await sleep(500);
+
+  // Step 5: Click Send
+  // The send button is typically inside the same overlay
+  const overlay = composeBody.closest('.msg-overlay-conversation-bubble, .msg-convo-wrapper, .msg-form');
+  const sendBtn = overlay
+    ? overlay.querySelector('button.msg-form__send-button, button.msg-form__send-btn, button[type="submit"]')
+    : document.querySelector('button.msg-form__send-button, button.msg-form__send-btn');
+
+  if (!sendBtn) {
+    throw new Error('Could not find Send button');
+  }
+
+  // Wait for button to become enabled
+  for (let i = 0; i < 10 && sendBtn.disabled; i++) {
+    await sleep(200);
+  }
+
+  if (sendBtn.disabled) {
+    // Try triggering input events again
+    composeBody.focus();
+    composeBody.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    composeBody.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+    await sleep(500);
+  }
+
+  sendBtn.click();
+  console.log('[LMH] Clicked Send button');
+  await sleep(1500);
+
+  // Step 6: Close the compose overlay
+  const closeBtn = composeBody.closest('.msg-overlay-conversation-bubble, .msg-convo-wrapper')
+    ?.querySelector('button[data-control-name*="close"], button.msg-overlay-bubble-header__control--close-btn');
+  if (closeBtn) {
+    closeBtn.click();
+    console.log('[LMH] Closed compose overlay');
+  }
+}
+
+// Wait for an element to appear in the DOM
+function waitForElement(selector, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const el = document.querySelector(selector);
+    if (el) return resolve(el);
+
+    const observer = new MutationObserver(() => {
+      const el = document.querySelector(selector);
+      if (el) {
+        observer.disconnect();
+        resolve(el);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeoutMs);
+  });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ── Helper: send message from the page's main world context ───────
 // Communicates with mainworld.js (registered with world: "MAIN" in manifest)
 // via postMessage. The main world script makes fetch calls through LinkedIn's
@@ -841,276 +1028,78 @@ function sendViaPageContext(recipientId, fsdId, messageText) {
   });
 }
 
-// ── Send LinkedIn message via Voyager API ─────────────────────────
+// ── Send LinkedIn message ──────────────────────────────────────────
 async function sendLinkedInMessage(recipientName, messageText) {
   console.log(`[LMH] sendLinkedInMessage: to="${recipientName}"`);
+  const errors = [];
+
+  // Strategy 1 (PRIMARY): Automate LinkedIn's messaging UI
+  //   Open compose overlay → type recipient name → select → type message → send.
+  //   No API calls needed — drives LinkedIn's own UI directly.
+  try {
+    console.log('[LMH] Trying UI automation (primary method)…');
+    await sendViaUI(recipientName, messageText);
+    console.log('[LMH] Message sent via UI automation!');
+    return;
+  } catch (e) {
+    errors.push(`ui: ${e.message}`);
+    console.warn('[LMH] UI automation failed:', e);
+  }
+
+  // Strategy 2 (FALLBACK): Try API via main world script
+  //   Only if UI automation failed. Requires resolving member IDs.
+  console.log('[LMH] UI failed, falling back to API approach…');
   const csrfToken = getCsrfToken();
-  if (!csrfToken) throw new Error('No CSRF token found');
+  if (!csrfToken) throw new Error(`Send failed: ${errors.join(' | ')} | No CSRF token for API fallback`);
 
-  // 1. Resolve the member ID for the recipient
+  // Resolve member ID
   let memberId = null;
-
-  // 1a. Try stored URN from mutual connections scrape
   const storedUrn = profileData?.mutualConnections?.nameToUrn?.get(recipientName) || null;
-  console.log(`[LMH] Stored URN for "${recipientName}":`, storedUrn);
   if (storedUrn) {
     const m = storedUrn.match(/fsd_profile:([A-Za-z0-9_-]+)/);
     if (m) memberId = m[1];
   }
-
-  // 1b. Fallback: search by name and regex the entire response for an fsd_profile URN
   if (!memberId) {
-    console.log(`[LMH] No stored URN, searching for "${recipientName}"…`);
     const searchUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
       + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
       + `&origin=GLOBAL_SEARCH_HEADER&q=all`
       + `&query=(keywords:${encodeURIComponent(recipientName)},flagshipSearchIntent:SEARCH_SRP,queryParameters:(resultType:List(PEOPLE),network:List(F)))`
       + `&count=1&start=0`;
-
-    const searchResp = await fetch(searchUrl, {
-      headers: {
-        'csrf-token': csrfToken,
-        'accept': 'application/vnd.linkedin.normalized+json+2.1',
-        'x-restli-protocol-version': '2.0.0',
-      },
-      credentials: 'include',
-    });
-
-    if (!searchResp.ok) throw new Error(`Search failed: ${searchResp.status}`);
-
-    const searchStr = await searchResp.text();
-    console.log(`[LMH] Search response length: ${searchStr.length}`);
-    // Find the first fsd_profile URN in the response
-    const m = searchStr.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
-    if (m) {
-      memberId = m[1];
-      console.log(`[LMH] Search found memberId: ${memberId}`);
-    } else {
-      console.log(`[LMH] No fsd_profile URN in search response, first 500 chars:`, searchStr.slice(0, 500));
-    }
-  }
-
-  if (!memberId) throw new Error('Could not find profile for: ' + recipientName);
-  console.log(`[LMH] Resolved memberId="${memberId}" for "${recipientName}"`);
-
-  // 1c. Resolve the numeric member ID and publicIdentifier via profile lookup
-  //     The messaging API may need the numeric ID, not the fsd_profile key
-  let numericMemberId = null;
-  let publicIdentifier = null;
-  try {
-    console.log(`[LMH] Looking up profile to resolve numeric member ID…`);
-    const profileResp = await fetch(
-      `https://www.linkedin.com/voyager/api/identity/profiles/${memberId}/profileContactInfo`,
-      {
-        headers: {
-          'csrf-token': csrfToken,
-          'accept': 'application/vnd.linkedin.normalized+json+2.1',
-          'x-restli-protocol-version': '2.0.0',
-        },
+    try {
+      const searchResp = await fetch(searchUrl, {
+        headers: { 'csrf-token': csrfToken, 'accept': 'application/vnd.linkedin.normalized+json+2.1', 'x-restli-protocol-version': '2.0.0' },
         credentials: 'include',
-      }
-    );
-    if (profileResp.ok) {
-      const profileStr = await profileResp.text();
-      // Look for objectUrn with numeric member ID
-      const memberMatch = profileStr.match(/urn:li:member:(\d+)/);
-      if (memberMatch) {
-        numericMemberId = memberMatch[1];
-        console.log(`[LMH] Numeric member ID: ${numericMemberId}`);
-      }
-      // Look for public identifier
-      const pidMatch = profileStr.match(/"publicIdentifier"\s*:\s*"([^"]+)"/);
-      if (pidMatch) {
-        publicIdentifier = pidMatch[1];
-        console.log(`[LMH] Public identifier: ${publicIdentifier}`);
-      }
-    }
-  } catch (e) {
-    console.warn('[LMH] Profile lookup failed:', e);
-  }
-
-  // If contact info didn't work, try the miniprofile endpoint
-  if (!numericMemberId) {
-    try {
-      const mpResp = await fetch(
-        `https://www.linkedin.com/voyager/api/identity/miniprofiles/${memberId}`,
-        {
-          headers: {
-            'csrf-token': csrfToken,
-            'accept': 'application/vnd.linkedin.normalized+json+2.1',
-            'x-restli-protocol-version': '2.0.0',
-          },
-          credentials: 'include',
-        }
-      );
-      if (mpResp.ok) {
-        const mpStr = await mpResp.text();
-        const memberMatch = mpStr.match(/urn:li:member:(\d+)/);
-        if (memberMatch) {
-          numericMemberId = memberMatch[1];
-          console.log(`[LMH] Numeric member ID (from miniprofile): ${numericMemberId}`);
-        }
-        if (!publicIdentifier) {
-          const pidMatch = mpStr.match(/"publicIdentifier"\s*:\s*"([^"]+)"/);
-          if (pidMatch) publicIdentifier = pidMatch[1];
-        }
-      }
-    } catch (e) {
-      console.warn('[LMH] Miniprofile lookup failed:', e);
-    }
-  }
-
-  console.log(`[LMH] IDs resolved: fsd=${memberId}, numeric=${numericMemberId}, pub=${publicIdentifier}`);
-
-  // 2. Send the message — try multiple strategies
-  const errors = [];
-
-  // x-li-track is required client metadata — without it LinkedIn rejects requests
-  const liTrack = JSON.stringify({
-    clientVersion: '1.13.8031',
-    mpVersion: '1.13.8031',
-    osName: 'web',
-    timezoneOffset: new Date().getTimezoneOffset(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Etc/UTC',
-    deviceFormFactor: 'DESKTOP',
-    mpName: 'voyager-web',
-  });
-
-  const headers = {
-    'csrf-token': csrfToken,
-    'accept': 'application/vnd.linkedin.normalized+json+2.1',
-    'content-type': 'application/json; charset=UTF-8',
-    'x-restli-protocol-version': '2.0.0',
-    'x-li-lang': 'en_US',
-    'x-li-track': liTrack,
-  };
-
-  // Helper: build the legacy MessageCreate payload
-  function legacyPayload(recipients) {
-    return JSON.stringify({
-      keyVersion: 'LEGACY_INBOX',
-      conversationCreate: {
-        eventCreate: {
-          value: {
-            'com.linkedin.voyager.messaging.create.MessageCreate': {
-              body: messageText,
-              attributedBody: { text: messageText, attributes: [] },
-              attachments: [],
-            },
-          },
-        },
-        recipients,
-        subtype: 'MEMBER_TO_MEMBER',
-      },
-    });
-  }
-
-  // Helper: try a single send strategy
-  async function trySend(label, url, body) {
-    try {
-      console.log(`[LMH] Trying ${label}…`);
-      const resp = await fetch(url, {
-        method: 'POST', headers, credentials: 'include', body,
       });
-      if (resp.ok || resp.status === 201) {
-        console.log(`[LMH] Message sent via ${label}!`);
-        return true;
+      if (searchResp.ok) {
+        const m = (await searchResp.text()).match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+        if (m) memberId = m[1];
       }
-      const errText = await resp.text();
-      errors.push(`${label} ${resp.status}: ${errText.slice(0, 300)}`);
-      console.warn(`[LMH] ${label} failed:`, resp.status, errText.slice(0, 300));
-    } catch (e) {
-      errors.push(`${label} error: ${e.message}`);
-      console.warn(`[LMH] ${label} error:`, e);
-    }
-    return false;
+    } catch (e) { /* ignore */ }
   }
 
-  const legacyUrl = 'https://www.linkedin.com/voyager/api/messaging/conversations?action=create';
-  const dashUrl = 'https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage';
+  if (!memberId) throw new Error(`Send failed: ${errors.join(' | ')} | Could not resolve profile ID`);
 
-  // 2a. BEST: send via main world script (mainworld.js)
-  //     Runs fetch through LinkedIn's own service workers which add
-  //     all required auth headers automatically.
-  const bestRecipient = numericMemberId || memberId;
+  // Resolve numeric member ID
+  let numericMemberId = null;
   try {
-    console.log('[LMH] Trying send via main world script (primary)…');
-    await sendViaPageContext(bestRecipient, memberId, messageText);
-    console.log('[LMH] Message sent via main world script!');
+    const mpResp = await fetch(
+      `https://www.linkedin.com/voyager/api/identity/miniprofiles/${memberId}`,
+      { headers: { 'csrf-token': csrfToken, 'accept': 'application/vnd.linkedin.normalized+json+2.1', 'x-restli-protocol-version': '2.0.0' }, credentials: 'include' }
+    );
+    if (mpResp.ok) {
+      const mm = (await mpResp.text()).match(/urn:li:member:(\d+)/);
+      if (mm) numericMemberId = mm[1];
+    }
+  } catch (e) { /* ignore */ }
+
+  // Try API via main world script
+  try {
+    await sendViaPageContext(numericMemberId || memberId, memberId, messageText);
+    console.log('[LMH] Message sent via main world API!');
     return;
   } catch (e) {
-    errors.push(`main-world: ${e.message}`);
-    console.warn('[LMH] Main world send failed:', e);
+    errors.push(`api: ${e.message}`);
   }
-
-  // 2b. Fallback: try content-script fetch with existing conversation
-  const recipientId = numericMemberId || memberId;
-  try {
-    console.log(`[LMH] Looking for existing conversation with ${recipientId}…`);
-    const convResp = await fetch(
-      `https://www.linkedin.com/voyager/api/messaging/conversations?` +
-      `q=participants&recipients=List(${encodeURIComponent(recipientId)})`,
-      {
-        headers: {
-          'csrf-token': csrfToken,
-          'accept': 'application/vnd.linkedin.normalized+json+2.1',
-          'x-restli-protocol-version': '2.0.0',
-          'x-li-lang': 'en_US',
-          'x-li-track': liTrack,
-        },
-        credentials: 'include',
-      }
-    );
-    if (convResp.ok) {
-      const convData = await convResp.json();
-      console.log('[LMH] Conversation lookup response keys:', Object.keys(convData));
-      const conversations = convData.elements || convData.data?.elements || [];
-      console.log(`[LMH] Found ${conversations.length} existing conversation(s)`);
-      if (conversations.length > 0) {
-        const conv = conversations[0];
-        const convId = conv.entityUrn || conv['*conversation'] || conv.backendUrn;
-        console.log('[LMH] Conversation entity:', convId, 'keys:', Object.keys(conv));
-        const convKey = (convId || '').replace(/^urn:li:(fs_conversation|msg_conversation):/, '');
-        if (convKey) {
-          console.log(`[LMH] Sending to existing conversation: ${convKey}`);
-          const eventBody = JSON.stringify({
-            eventCreate: {
-              value: {
-                'com.linkedin.voyager.messaging.create.MessageCreate': {
-                  body: messageText,
-                  attributedBody: { text: messageText, attributes: [] },
-                  attachments: [],
-                },
-              },
-            },
-          });
-          if (await trySend('existing-conv', `https://www.linkedin.com/voyager/api/messaging/conversations/${convKey}/events?action=create`, eventBody)) return;
-        }
-      } else {
-        console.log('[LMH] No existing conversation found');
-      }
-    } else {
-      const errText = await convResp.text();
-      console.warn(`[LMH] Conversation lookup failed: ${convResp.status}`, errText.slice(0, 200));
-    }
-  } catch (e) {
-    console.warn('[LMH] Existing conversation lookup failed:', e);
-  }
-
-  // 2c. Fallback: direct content-script API calls
-  if (numericMemberId) {
-    if (await trySend('legacy(memberUrn)', legacyUrl, legacyPayload([`urn:li:member:${numericMemberId}`]))) return;
-  }
-  if (await trySend('legacy(miniProfile)', legacyUrl,
-    legacyPayload([`urn:li:fs_miniProfile:${memberId}`]))) return;
-  if (await trySend('dash(fsd)', dashUrl, JSON.stringify({
-    dedupeByClientGeneratedToken: false,
-    message: {
-      body: { text: messageText, attributes: [] },
-      renderContentUnions: [],
-    },
-    hostRecipientUrns: [`urn:li:fsd_profile:${memberId}`],
-  }))) return;
 
   throw new Error(`Send failed: ${errors.join(' | ')}`);
 }

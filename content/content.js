@@ -1102,73 +1102,120 @@ async function scrapeFullMutualConnections(onProgress) {
       // Log first page structure for debugging
       if (debug.pages === 1) {
         if (Array.isArray(data.included) && data.included.length > 0) {
-          // Dump full first 3 items so we can see the actual property names
-          console.log('[LMH] INCLUDED ITEM 0:', JSON.stringify(data.included[0]));
-          console.log('[LMH] INCLUDED ITEM 1:', JSON.stringify(data.included[1]));
-          console.log('[LMH] INCLUDED ITEM 2:', JSON.stringify(data.included[2]));
-          // Find an item with the most keys (likely a profile)
-          let richest = data.included[0];
+          // Collect all unique $type values to understand entity types
+          const types = {};
           for (const item of data.included) {
-            if (Object.keys(item).length > Object.keys(richest).length) richest = item;
+            const t = item.$type || item['$recipeType'] || 'unknown';
+            types[t] = (types[t] || 0) + 1;
           }
-          console.log('[LMH] RICHEST ITEM (' + Object.keys(richest).length + ' keys):', JSON.stringify(richest).slice(0, 3000));
+          console.log('[LMH] ENTITY TYPES:', JSON.stringify(types));
+
+          // Dump one item of each type
+          const seenTypes = new Set();
+          for (const item of data.included) {
+            const t = item.$type || item['$recipeType'] || 'unknown';
+            if (!seenTypes.has(t)) {
+              seenTypes.add(t);
+              console.log(`[LMH] SAMPLE ${t}:`, JSON.stringify(item).slice(0, 2000));
+            }
+          }
         }
         // Dump first element from data.data.elements
-        const elements = data?.data?.elements;
-        if (Array.isArray(elements) && elements.length > 0) {
-          console.log('[LMH] ELEMENT 0:', JSON.stringify(elements[0]).slice(0, 3000));
+        const elems = data?.data?.elements;
+        if (Array.isArray(elems) && elems.length > 0) {
+          console.log('[LMH] ELEMENT 0:', JSON.stringify(elems[0]).slice(0, 3000));
         }
       }
 
       const prevSize = names.size;
 
-      // Extract names — try every possible property pattern
+      // ── Extract names from LinkedIn's normalized JSON ──
+      // The response has two parts:
+      //   data.included[] — flat entity store (profiles, text, images, etc.)
+      //   data.data.elements[] — search result clusters referencing included entities
+      //
+      // Strategy: build an entity lookup, then walk the search result tree
+      //           to find the "title" of each person result.
+
       if (Array.isArray(data.included)) {
+        // Build entity map: entityUrn → entity
+        const entityMap = {};
         for (const item of data.included) {
-          // Standard: firstName + lastName
+          const key = item.entityUrn || item['$id'];
+          if (key) entityMap[key] = item;
+        }
+
+        // Strategy 1: Direct firstName + lastName on included items
+        for (const item of data.included) {
           if (item.firstName && item.lastName) {
             names.add(`${item.firstName} ${item.lastName}`);
           }
-          // Alternative: title.text (used in search result entities)
-          if (item.title?.text && /^[A-Z]/.test(item.title.text) && item.title.text.includes(' ')) {
-            names.add(item.title.text.trim());
+          // Also check localizedFirstName / localizedLastName
+          if (item.localizedFirstName && item.localizedLastName) {
+            names.add(`${item.localizedFirstName} ${item.localizedLastName}`);
           }
         }
-      }
 
-      // Also try extracting from data.data.elements (the actual search results)
-      const elements = data?.data?.elements;
-      if (Array.isArray(elements)) {
-        for (const cluster of elements) {
-          const items = cluster.items || cluster.elements || [];
+        // Strategy 2: Find EntityResult items → resolve title → get text
+        // In normalized JSON, search results have $type containing "EntityResult"
+        // with title being either an inline object or a reference (string URN)
+        for (const item of data.included) {
+          const type = item.$type || item['$recipeType'] || '';
+          if (/EntityResult|SearchResult/i.test(type)) {
+            let name = null;
+
+            // Title might be inline: { title: { text: "Name" } }
+            if (item.title?.text) {
+              name = item.title.text;
+            }
+            // Title might be a reference: { "*title": "urn:li:..." }
+            else if (item['*title'] && entityMap[item['*title']]) {
+              name = entityMap[item['*title']].text;
+            }
+            // Some formats use navigationUrl to identify people results
+            // and store the name in title
+            else if (item.title && typeof item.title === 'string') {
+              name = item.title;
+            }
+
+            if (name && typeof name === 'string' && name.trim().length > 1) {
+              names.add(name.trim());
+            }
+          }
+        }
+
+        // Strategy 3: Find TextViewModel items whose text looks like a person name
+        // BUT only if they're referenced by an EntityResult title (to avoid noise)
+        // → already handled above via entityMap resolution
+
+        // Strategy 4: Walk data.data.elements for names embedded in the result tree
+        const clusters = data?.data?.elements || [];
+        for (const cluster of clusters) {
+          const items = cluster.items || [];
           for (const entry of items) {
-            // Deeply search for title.text or name patterns
-            const str = JSON.stringify(entry);
-            // Match "title":{"text":"Some Name"} pattern
-            const titleMatches = str.matchAll(/"title"\s*:\s*\{\s*"text"\s*:\s*"([^"]+)"/g);
-            for (const m of titleMatches) {
-              const name = m[1].trim();
-              if (name.includes(' ') && name.length > 2 && name.length < 80
-                && /^[A-Z]/.test(name) && !/\d/.test(name) && !/mutual/i.test(name)
-                && !/follower/i.test(name) && !/connection/i.test(name)) {
-                names.add(name);
-              }
+            // Each item might have item.entityResult or item.entity
+            const result = entry.item?.entityResult || entry.entityResult || entry;
+            if (result?.title?.text) {
+              names.add(result.title.text.trim());
             }
-            // Match "firstName":"X","lastName":"Y" pattern
-            const nameMatches = str.matchAll(/"firstName"\s*:\s*"([^"]+)"\s*,\s*"lastName"\s*:\s*"([^"]+)"/g);
-            for (const m of nameMatches) {
-              names.add(`${m[1]} ${m[2]}`);
+            // Follow references
+            if (result?.['*title'] && entityMap[result['*title']]) {
+              const t = entityMap[result['*title']].text;
+              if (t) names.add(t.trim());
             }
           }
         }
-      }
 
-      // Last resort: regex the entire response for any name patterns
-      if (names.size === prevSize) {
-        const fullStr = JSON.stringify(data);
-        const nameMatches = fullStr.matchAll(/"firstName"\s*:\s*"([^"]+)"\s*,\s*"lastName"\s*:\s*"([^"]+)"/g);
-        for (const m of nameMatches) {
-          names.add(`${m[1]} ${m[2]}`);
+        // Strategy 5: If still nothing, find any item with a 'text' field
+        // that's referenced by an item containing 'navigationUrl' with '/in/'
+        if (names.size === prevSize) {
+          for (const item of data.included) {
+            const type = item.$type || item['$recipeType'] || '';
+            const navUrl = item.navigationUrl || item.url || '';
+            if (navUrl.includes('/in/') && item.title?.text) {
+              names.add(item.title.text.trim());
+            }
+          }
         }
       }
 

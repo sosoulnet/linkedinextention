@@ -609,16 +609,26 @@ async function openMutualFriendsModal() {
       <div class="lmh-section-label">Intro request message <span class="lmh-optional">— use [friend] as placeholder</span></div>
       <textarea id="lmh-mutual-message" class="lmh-textarea" rows="3">${escapeHTML(defaultMessage)}</textarea>
     </div>
-    <button id="lmh-mutual-submit-btn" class="lmh-generate-btn lmh-mutual-submit-btn" disabled style="margin-top:8px">Send to Selected Friends</button>
+    <button id="lmh-propagate-btn" class="lmh-generate-btn lmh-propagate-btn" disabled style="margin-top:8px">Propagate Messages</button>
+    <div id="lmh-propagated-section" class="lmh-propagated-section lmh-hidden">
+      <div class="lmh-propagated-header">
+        <div class="lmh-section-label">Personalized messages</div>
+        <button id="lmh-send-all-btn" class="lmh-send-all-btn" disabled>Send All</button>
+      </div>
+      <div id="lmh-propagated-list" class="lmh-propagated-list"></div>
+    </div>
   `;
 
   const checkboxes = body.querySelectorAll('.lmh-mutual-cb');
   const selectAllCb = body.querySelector('#lmh-mutual-select-all');
   const selectedCountEl = body.querySelector('#lmh-mutual-selected-count');
-  const submitBtn = body.querySelector('#lmh-mutual-submit-btn');
+  const propagateBtn = body.querySelector('#lmh-propagate-btn');
   const messageTextarea = body.querySelector('#lmh-mutual-message');
   const taggedSection = body.querySelector('#lmh-tagged-section');
   const taggedList = body.querySelector('#lmh-tagged-list');
+  const propagatedSection = body.querySelector('#lmh-propagated-section');
+  const propagatedList = body.querySelector('#lmh-propagated-list');
+  const sendAllBtn = body.querySelector('#lmh-send-all-btn');
 
   function getSelectedNames() {
     return [...body.querySelectorAll('.lmh-mutual-cb:checked')].map((cb) => cb.dataset.name);
@@ -627,7 +637,7 @@ async function openMutualFriendsModal() {
   function updateTaggedList() {
     const selected = getSelectedNames();
     selectedCountEl.textContent = selected.length;
-    submitBtn.disabled = selected.length === 0 || !messageTextarea.value.trim();
+    propagateBtn.disabled = selected.length === 0 || !messageTextarea.value.trim();
 
     if (selected.length === 0) {
       taggedSection.classList.add('lmh-hidden');
@@ -667,37 +677,112 @@ async function openMutualFriendsModal() {
 
   messageTextarea.addEventListener('input', () => {
     const selected = getSelectedNames();
-    submitBtn.disabled = selected.length === 0 || !messageTextarea.value.trim();
+    propagateBtn.disabled = selected.length === 0 || !messageTextarea.value.trim();
   });
 
-  // Submit: send personalized message to each selected friend
-  submitBtn.addEventListener('click', async () => {
+  // Propagate: generate personalized messages for each selected friend
+  propagateBtn.addEventListener('click', () => {
     const selected = getSelectedNames();
     const messageTemplate = messageTextarea.value.trim();
-
     if (selected.length === 0 || !messageTemplate) return;
 
-    submitBtn.disabled = true;
-    submitBtn.textContent = `Sending to ${selected.length} friend(s)...`;
+    propagatedSection.classList.remove('lmh-hidden');
+    propagatedList.innerHTML = selected.map((name) => {
+      const firstName = name.split(' ')[0];
+      const personalizedMessage = messageTemplate.replace(/\[friend\]/gi, firstName);
+      return `
+        <div class="lmh-propagated-row" data-name="${escapeHTML(name)}" data-status="pending">
+          <div class="lmh-propagated-row-header">
+            <span class="lmh-propagated-name">${escapeHTML(name)}</span>
+            <button class="lmh-propagated-send-btn" title="Send to ${escapeHTML(name)}">Send</button>
+          </div>
+          <textarea class="lmh-propagated-textarea" rows="2">${escapeHTML(personalizedMessage)}</textarea>
+        </div>
+      `;
+    }).join('');
+
+    sendAllBtn.disabled = false;
+    propagatedSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Bind individual Send buttons
+    propagatedList.querySelectorAll('.lmh-propagated-send-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('.lmh-propagated-row');
+        if (row.dataset.status === 'sent') return;
+        const friendName = row.dataset.name;
+        const message = row.querySelector('.lmh-propagated-textarea').value.trim();
+        if (!message) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        row.dataset.status = 'sending';
+
+        try {
+          await sendLinkedInMessage(friendName, message);
+          row.dataset.status = 'sent';
+          btn.textContent = 'Sent';
+          btn.classList.add('lmh-sent');
+          row.querySelector('.lmh-propagated-textarea').readOnly = true;
+          updateSendAllState();
+        } catch (err) {
+          console.error(`Failed to send to ${friendName}:`, err);
+          row.dataset.status = 'error';
+          btn.textContent = 'Retry';
+          btn.disabled = false;
+          btn.classList.add('lmh-error-btn');
+        }
+      });
+    });
+  });
+
+  function updateSendAllState() {
+    const pending = propagatedList.querySelectorAll('.lmh-propagated-row:not([data-status="sent"])');
+    sendAllBtn.disabled = pending.length === 0;
+    if (pending.length === 0) {
+      sendAllBtn.textContent = 'All Sent';
+      sendAllBtn.classList.add('lmh-sent');
+    }
+  }
+
+  // Send All: send every unsent message
+  sendAllBtn.addEventListener('click', async () => {
+    const rows = [...propagatedList.querySelectorAll('.lmh-propagated-row:not([data-status="sent"])')];
+    if (rows.length === 0) return;
+
+    sendAllBtn.disabled = true;
+    sendAllBtn.textContent = `Sending 0 / ${rows.length}…`;
 
     let sent = 0;
-    for (const friendName of selected) {
-      const firstName = friendName.split(' ')[0];
-      const personalizedMessage = messageTemplate.replace(/\[friend\]/gi, firstName);
+    for (const row of rows) {
+      const friendName = row.dataset.name;
+      const message = row.querySelector('.lmh-propagated-textarea').value.trim();
+      const btn = row.querySelector('.lmh-propagated-send-btn');
+      if (!message || row.dataset.status === 'sent') continue;
+
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      row.dataset.status = 'sending';
+
       try {
-        await sendLinkedInMessage(friendName, personalizedMessage);
+        await sendLinkedInMessage(friendName, message);
+        row.dataset.status = 'sent';
+        btn.textContent = 'Sent';
+        btn.classList.add('lmh-sent');
+        row.querySelector('.lmh-propagated-textarea').readOnly = true;
         sent++;
       } catch (err) {
         console.error(`Failed to send to ${friendName}:`, err);
+        row.dataset.status = 'error';
+        btn.textContent = 'Retry';
+        btn.disabled = false;
+        btn.classList.add('lmh-error-btn');
       }
+
+      sendAllBtn.textContent = `Sending ${sent} / ${rows.length}…`;
     }
 
-    submitBtn.textContent = `Sent to ${sent} / ${selected.length} friends`;
     showNotification(`Intro request sent to ${sent} friend(s)!`);
-    setTimeout(() => {
-      submitBtn.textContent = 'Send to Selected Friends';
-      submitBtn.disabled = false;
-    }, 3000);
+    updateSendAllState();
   });
 }
 

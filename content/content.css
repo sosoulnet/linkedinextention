@@ -720,19 +720,154 @@
   margin-top: 4px;
 }
 
-.lmh-mutual-submit-btn {
-  background: #057642;
-  border-color: #057642;
+/* ── Propagate button ──────────────────────────────────────────── */
+.lmh-propagate-btn {
+  background: #0a66c2;
 }
 
-.lmh-mutual-submit-btn:hover:not(:disabled) {
+.lmh-propagate-btn:hover:not(:disabled) {
+  background: #004182;
+}
+
+/* ── Propagated messages section ───────────────────────────────── */
+.lmh-propagated-section {
+  margin-top: 12px;
+}
+
+.lmh-propagated-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.lmh-propagated-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.lmh-propagated-row {
+  background: #fff;
+  border: 1px solid #e0dfdc;
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: border-color 0.15s;
+}
+
+.lmh-propagated-row[data-status="sent"] {
+  border-color: #057642;
+  opacity: 0.75;
+}
+
+.lmh-propagated-row[data-status="error"] {
+  border-color: #dc2626;
+}
+
+.lmh-propagated-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.lmh-propagated-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2226;
+}
+
+.lmh-propagated-textarea {
+  width: 100%;
+  border: 1px solid #e0dfdc;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  color: #1d2226;
+  background: #fafaf8;
+  box-sizing: border-box;
+}
+
+.lmh-propagated-textarea:focus {
+  outline: none;
+  border-color: #0a66c2;
+}
+
+.lmh-propagated-textarea[readonly] {
+  background: #f3f2ef;
+  color: #666;
+}
+
+.lmh-propagated-send-btn {
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background: #057642;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.lmh-propagated-send-btn:hover:not(:disabled):not(.lmh-sent) {
   background: #03612f;
 }
 
-.lmh-mutual-submit-btn:disabled {
-  background: #ccc;
-  border-color: #ccc;
+.lmh-propagated-send-btn:disabled {
   cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.lmh-propagated-send-btn.lmh-sent {
+  background: #ccc;
+  color: #666;
+  cursor: default;
+}
+
+.lmh-propagated-send-btn.lmh-error-btn {
+  background: #dc2626;
+}
+
+.lmh-propagated-send-btn.lmh-error-btn:hover {
+  background: #b91c1c;
+}
+
+/* ── Send All button ───────────────────────────────────────────── */
+.lmh-send-all-btn {
+  padding: 5px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background: #057642;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.lmh-send-all-btn:hover:not(:disabled):not(.lmh-sent) {
+  background: #03612f;
+}
+
+.lmh-send-all-btn:disabled {
+  background: #ccc;
+  color: #666;
+  cursor: not-allowed;
+}
+
+.lmh-send-all-btn.lmh-sent {
+  background: #ccc;
+  color: #666;
+  cursor: default;
 }
 
 /* ── Utility ────────────────────────────────────────────────────── */

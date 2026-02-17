@@ -860,17 +860,31 @@ async function sendLinkedInMessage(recipientName, messageText) {
   console.log(`[LMH] Resolved memberId="${memberId}" for "${recipientName}"`);
 
   // 2. Send the message — try strategies in order of reliability:
-  //    A) Find existing conversation → send event to it
-  //    B) Dash createMessage API (new conversations)
-  //    C) Legacy create new conversation (multiple URN formats)
+  //    A) Legacy create new conversation (raw ID — matches beeper/linkedin-api)
+  //    B) Legacy create new conversation (miniProfile URN)
+  //    C) Dash createMessage API
   const errors = [];
   const profileUrn = `urn:li:fsd_profile:${memberId}`;
   const miniProfileUrn = `urn:li:fs_miniProfile:${memberId}`;
+
+  // x-li-track is required client metadata — without it LinkedIn rejects requests
+  const liTrack = JSON.stringify({
+    clientVersion: '1.13.8031',
+    mpVersion: '1.13.8031',
+    osName: 'web',
+    timezoneOffset: new Date().getTimezoneOffset(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Etc/UTC',
+    deviceFormFactor: 'DESKTOP',
+    mpName: 'voyager-web',
+  });
+
   const headers = {
     'csrf-token': csrfToken,
     'accept': 'application/vnd.linkedin.normalized+json+2.1',
     'content-type': 'application/json; charset=UTF-8',
     'x-restli-protocol-version': '2.0.0',
+    'x-li-lang': 'en_US',
+    'x-li-track': liTrack,
   };
 
   // Helper: build the legacy MessageCreate payload
@@ -882,74 +896,72 @@ async function sendLinkedInMessage(recipientName, messageText) {
             body: messageText,
             attributedBody: { text: messageText, attributes: [] },
             attachments: [],
-            mediaAttachments: [],
           },
         },
       },
     };
   }
 
-  // 2a. Look up existing conversation with this person, then send to it
+  // 2a. Legacy create — raw member ID (matches tomquirk/linkedin-api & beeper)
   try {
-    console.log(`[LMH] Looking up conversation for ${profileUrn}…`);
-    // Try both URN formats for participant lookup
-    let convId = null;
-    for (const urn of [profileUrn, miniProfileUrn]) {
-      const lookupUrl = `https://www.linkedin.com/voyager/api/messaging/conversations`
-        + `?q=participants&recipients=List(${encodeURIComponent(urn)})`;
-      const lookupResp = await fetch(lookupUrl, { headers, credentials: 'include' });
-      if (lookupResp.ok) {
-        const lookupStr = await lookupResp.text();
-        // Extract conversation entityUrn or id
-        const convMatch = lookupStr.match(/urn:li:fs_conversation:([A-Za-z0-9_=-]+)/);
-        if (convMatch) {
-          convId = convMatch[0]; // full URN
-          console.log(`[LMH] Found conversation: ${convId} (via ${urn})`);
-          break;
-        }
-        // Also try the dash-style conversation URN
-        const dashConvMatch = lookupStr.match(/urn:li:fsd_conversation:([A-Za-z0-9_=-]+)/);
-        if (dashConvMatch) {
-          convId = dashConvMatch[0];
-          console.log(`[LMH] Found dash conversation: ${convId} (via ${urn})`);
-          break;
-        }
-      }
+    console.log(`[LMH] Trying legacy create with raw ID: ${memberId}…`);
+    const resp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({
+        keyVersion: 'LEGACY_INBOX',
+        conversationCreate: {
+          ...legacyMessageEvent(),
+          recipients: [memberId],
+          subtype: 'MEMBER_TO_MEMBER',
+        },
+      }),
+    });
+    if (resp.ok || resp.status === 201) {
+      console.log('[LMH] Message sent via legacy (raw)!');
+      return;
     }
-
-    if (convId) {
-      // Extract just the ID part for the REST endpoint
-      const convIdPart = convId.replace(/^urn:li:f(s_|sd_)conversation:/, '');
-      console.log(`[LMH] Sending to existing conversation ${convIdPart}…`);
-      const eventResp = await fetch(
-        `https://www.linkedin.com/voyager/api/messaging/conversations/${encodeURIComponent(convIdPart)}/events?action=create`,
-        {
-          method: 'POST',
-          headers,
-          credentials: 'include',
-          body: JSON.stringify(legacyMessageEvent()),
-        }
-      );
-      if (eventResp.ok || eventResp.status === 201) {
-        console.log('[LMH] Message sent to existing conversation!');
-        return;
-      }
-      const errText = await eventResp.text();
-      errors.push(`existing-conv ${eventResp.status}: ${errText.slice(0, 300)}`);
-      console.warn('[LMH] Send to existing conversation failed:', eventResp.status, errText.slice(0, 300));
-    } else {
-      console.log('[LMH] No existing conversation found, will try creating new one.');
-      errors.push('existing-conv: no conversation found');
-    }
+    const errText = await resp.text();
+    errors.push(`legacy(raw) ${resp.status}: ${errText.slice(0, 300)}`);
+    console.warn('[LMH] Legacy raw failed:', resp.status, errText.slice(0, 300));
   } catch (e) {
-    errors.push(`existing-conv error: ${e.message}`);
-    console.warn('[LMH] Conversation lookup error:', e);
+    errors.push(`legacy(raw) error: ${e.message}`);
+    console.warn('[LMH] Legacy raw error:', e);
   }
 
-  // 2b. Dash messaging API — works for both new and existing conversations
+  // 2b. Legacy create — miniProfile URN
+  try {
+    console.log(`[LMH] Trying legacy create with miniProfile: ${miniProfileUrn}…`);
+    const resp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify({
+        keyVersion: 'LEGACY_INBOX',
+        conversationCreate: {
+          ...legacyMessageEvent(),
+          recipients: [miniProfileUrn],
+          subtype: 'MEMBER_TO_MEMBER',
+        },
+      }),
+    });
+    if (resp.ok || resp.status === 201) {
+      console.log('[LMH] Message sent via legacy (miniProfile)!');
+      return;
+    }
+    const errText = await resp.text();
+    errors.push(`legacy(miniProfile) ${resp.status}: ${errText.slice(0, 300)}`);
+    console.warn('[LMH] Legacy miniProfile failed:', resp.status, errText.slice(0, 300));
+  } catch (e) {
+    errors.push(`legacy(miniProfile) error: ${e.message}`);
+    console.warn('[LMH] Legacy miniProfile error:', e);
+  }
+
+  // 2c. Dash messaging API
   try {
     console.log('[LMH] Trying dash messaging API…');
-    const dashResp = await fetch('https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage', {
+    const resp = await fetch('https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage', {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -965,75 +977,16 @@ async function sendLinkedInMessage(recipientName, messageText) {
         hostRecipientUrns: [profileUrn],
       }),
     });
-
-    if (dashResp.ok || dashResp.status === 201) {
+    if (resp.ok || resp.status === 201) {
       console.log('[LMH] Message sent via dash API!');
       return;
     }
-    const errText = await dashResp.text();
-    errors.push(`dash ${dashResp.status}: ${errText.slice(0, 300)}`);
-    console.warn(`[LMH] Dash API failed:`, dashResp.status, errText.slice(0, 300));
+    const errText = await resp.text();
+    errors.push(`dash ${resp.status}: ${errText.slice(0, 300)}`);
+    console.warn('[LMH] Dash API failed:', resp.status, errText.slice(0, 300));
   } catch (e) {
     errors.push(`dash error: ${e.message}`);
     console.warn('[LMH] Dash API error:', e);
-  }
-
-  // 2c. Legacy — create new conversation with miniProfile URN
-  try {
-    console.log(`[LMH] Trying legacy create with miniProfile: ${miniProfileUrn}…`);
-    const legacyResp = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
-      method: 'POST',
-      headers,
-      credentials: 'include',
-      body: JSON.stringify({
-        keyVersion: 'LEGACY_INBOX',
-        conversationCreate: {
-          ...legacyMessageEvent(),
-          recipients: [miniProfileUrn],
-          subtype: 'MEMBER_TO_MEMBER',
-        },
-      }),
-    });
-
-    if (legacyResp.ok || legacyResp.status === 201) {
-      console.log('[LMH] Message sent via legacy API (miniProfile)!');
-      return;
-    }
-    const errText = await legacyResp.text();
-    errors.push(`legacy(miniProfile) ${legacyResp.status}: ${errText.slice(0, 300)}`);
-    console.warn(`[LMH] Legacy miniProfile failed:`, legacyResp.status, errText.slice(0, 300));
-  } catch (e) {
-    errors.push(`legacy(miniProfile) error: ${e.message}`);
-    console.warn('[LMH] Legacy miniProfile error:', e);
-  }
-
-  // 2d. Legacy — create new conversation with raw member ID
-  try {
-    console.log(`[LMH] Trying legacy create with raw memberId: ${memberId}…`);
-    const legacyResp2 = await fetch('https://www.linkedin.com/voyager/api/messaging/conversations?action=create', {
-      method: 'POST',
-      headers,
-      credentials: 'include',
-      body: JSON.stringify({
-        keyVersion: 'LEGACY_INBOX',
-        conversationCreate: {
-          ...legacyMessageEvent(),
-          recipients: [memberId],
-          subtype: 'MEMBER_TO_MEMBER',
-        },
-      }),
-    });
-
-    if (legacyResp2.ok || legacyResp2.status === 201) {
-      console.log('[LMH] Message sent via legacy API (raw)!');
-      return;
-    }
-    const errText = await legacyResp2.text();
-    errors.push(`legacy(raw) ${legacyResp2.status}: ${errText.slice(0, 300)}`);
-    console.warn(`[LMH] Legacy raw failed:`, legacyResp2.status, errText.slice(0, 300));
-  } catch (e) {
-    errors.push(`legacy(raw) error: ${e.message}`);
-    console.warn('[LMH] Legacy raw error:', e);
   }
 
   throw new Error(`Send failed: ${errors.join(' | ')}`);

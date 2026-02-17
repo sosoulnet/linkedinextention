@@ -912,6 +912,10 @@ async function sendViaUI(recipientName, messageText) {
   await sleep(500);
 
   // Step 4: Type the message in the compose body
+  //   LinkedIn uses a rich-text editor (Draft.js / custom React) which manages
+  //   its own internal state. Plain innerHTML or execCommand won't update React
+  //   state, so the Send button stays disabled.  We simulate a clipboard paste
+  //   via DataTransfer, which the editor properly picks up.
   const composeBody = await waitForElement(
     'div.msg-form__contenteditable[contenteditable="true"], ' +
     'div[role="textbox"][contenteditable="true"], ' +
@@ -923,45 +927,110 @@ async function sendViaUI(recipientName, messageText) {
   }
 
   composeBody.focus();
-  await sleep(200);
-  composeBody.innerHTML = '';
-  document.execCommand('insertText', false, messageText);
-  composeBody.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(300);
 
-  console.log('[LMH] Message typed into compose body');
+  // Simulate a paste event with the message text.
+  // This updates the editor's internal state (Draft.js / React controlled).
+  const dt = new DataTransfer();
+  dt.setData('text/plain', messageText);
+  const pasteEvent = new ClipboardEvent('paste', {
+    bubbles: true,
+    cancelable: true,
+    clipboardData: dt,
+  });
+  composeBody.dispatchEvent(pasteEvent);
+  console.log('[LMH] Dispatched paste event with message text');
   await sleep(500);
 
-  // Step 5: Click Send
-  // The send button is typically inside the same overlay
-  const overlay = composeBody.closest('.msg-overlay-conversation-bubble, .msg-convo-wrapper, .msg-form');
-  const sendBtn = overlay
-    ? overlay.querySelector('button.msg-form__send-button, button.msg-form__send-btn, button[type="submit"]')
-    : document.querySelector('button.msg-form__send-button, button.msg-form__send-btn');
-
-  if (!sendBtn) {
-    throw new Error('Could not find Send button');
-  }
-
-  // Wait for button to become enabled
-  for (let i = 0; i < 10 && sendBtn.disabled; i++) {
-    await sleep(200);
-  }
-
-  if (sendBtn.disabled) {
-    // Try triggering input events again
+  // Verify text appeared — if paste didn't work, try execCommand + InputEvent
+  if (!composeBody.textContent || composeBody.textContent.trim().length === 0) {
+    console.log('[LMH] Paste did not populate editor, trying execCommand fallback…');
     composeBody.focus();
-    composeBody.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-    composeBody.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+    // Select all and delete any existing content
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    // Insert text
+    document.execCommand('insertText', false, messageText);
+    // Fire InputEvent (not plain Event) — React/Draft.js listens for this
+    composeBody.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertText',
+      data: messageText,
+    }));
     await sleep(500);
   }
 
-  sendBtn.click();
-  console.log('[LMH] Clicked Send button');
+  // Final fallback: set innerHTML directly and trigger all relevant events
+  if (!composeBody.textContent || composeBody.textContent.trim().length === 0) {
+    console.log('[LMH] execCommand also failed, setting innerHTML directly…');
+    composeBody.innerHTML = `<p>${messageText}</p>`;
+    for (const evtType of ['input', 'change', 'keydown', 'keyup']) {
+      composeBody.dispatchEvent(new Event(evtType, { bubbles: true }));
+    }
+    await sleep(500);
+  }
+
+  console.log('[LMH] Compose body text:', composeBody.textContent?.slice(0, 100));
+  await sleep(300);
+
+  // Step 5: Send the message
+  //   Try multiple methods: click Send button, then Enter key as fallback.
+  const overlay = composeBody.closest(
+    '.msg-overlay-conversation-bubble, .msg-convo-wrapper, .msg-form, .msg-overlay-conversation-bubble--is-active-conversation'
+  );
+
+  // Find send button within the same overlay
+  const sendBtnSelector = 'button.msg-form__send-button, button.msg-form__send-btn, button[type="submit"]';
+  let sendBtn = overlay
+    ? overlay.querySelector(sendBtnSelector)
+    : document.querySelector(sendBtnSelector);
+
+  // Broader search: any button with "Send" text in the overlay
+  if (!sendBtn && overlay) {
+    for (const btn of overlay.querySelectorAll('button')) {
+      if (btn.textContent?.trim().toLowerCase() === 'send') {
+        sendBtn = btn;
+        break;
+      }
+    }
+  }
+
+  let sent = false;
+
+  if (sendBtn && !sendBtn.disabled) {
+    sendBtn.click();
+    console.log('[LMH] Clicked Send button');
+    sent = true;
+  } else {
+    console.log(`[LMH] Send button ${sendBtn ? 'disabled' : 'not found'}, trying Enter key…`);
+  }
+
+  // Also try pressing Enter (LinkedIn sends on Enter by default)
+  if (!sent || (sendBtn && sendBtn.disabled)) {
+    composeBody.focus();
+    await sleep(200);
+    const enterDown = new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+      bubbles: true, cancelable: true,
+    });
+    const enterUp = new KeyboardEvent('keyup', {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+      bubbles: true,
+    });
+    composeBody.dispatchEvent(enterDown);
+    composeBody.dispatchEvent(enterUp);
+    console.log('[LMH] Dispatched Enter key');
+    sent = true;
+  }
+
   await sleep(1500);
 
   // Step 6: Close the compose overlay
-  const closeBtn = composeBody.closest('.msg-overlay-conversation-bubble, .msg-convo-wrapper')
-    ?.querySelector('button[data-control-name*="close"], button.msg-overlay-bubble-header__control--close-btn');
+  const closeBtn = (overlay || document).querySelector(
+    'button[data-control-name*="close"], ' +
+    'button.msg-overlay-bubble-header__control--close-btn, ' +
+    '.msg-overlay-conversation-bubble header button.artdeco-button--circle'
+  );
   if (closeBtn) {
     closeBtn.click();
     console.log('[LMH] Closed compose overlay');

@@ -96,22 +96,23 @@ async function openPanel() {
       mutualEl.textContent += ' (loading full list…)';
     }
 
-    scrapeFullMutualConnections().then((fullNames) => {
+    scrapeFullMutualConnections().then(({ names: fullNames, debug }) => {
+      // Store debug info for QA panel
+      profileData.mutualConnections.fetchDebug = debug;
+
+      const el = document.querySelector('#lmh-panel .lmh-profile-mutual');
+      const count = profileData.mutualConnections.count;
+
       if (fullNames && fullNames.length > 0) {
         profileData.mutualConnections.names = fullNames;
-        // Update the UI card
-        const el = document.querySelector('#lmh-panel .lmh-profile-mutual');
         if (el) {
-          const count = profileData.mutualConnections.count;
           el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}: ${fullNames.join(', ')}`;
         }
       } else {
-        // Remove loading indicator if scraping failed
-        const el = document.querySelector('#lmh-panel .lmh-profile-mutual');
+        // Remove loading indicator, show existing names
+        const existingNames = profileData.mutualConnections.names;
         if (el) {
-          const count = profileData.mutualConnections.count;
-          const existingNames = profileData.mutualConnections.names;
-          el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}${existingNames.length > 0 ? ': ' + existingNames.join(', ') : ''}`;
+          el.textContent = `${count} mutual connection${count !== 1 ? 's' : ''}${existingNames.length > 0 ? ': ' + existingNames.join(', ') : ''} (full list fetch: ${debug.step})`;
         }
       }
     });
@@ -330,9 +331,11 @@ function displayMessagesInPanel(_container, messages) {
   const qaPanel = document.createElement('div');
   qaPanel.className = 'lmh-qa-panel lmh-hidden';
   if (lastPrompts) {
-    const mutualDebug = lastPrompts.mutualRaw
-      ? JSON.stringify(lastPrompts.mutualRaw, null, 2)
-      : '{ "count": 0, "names": [] }';
+    const mutualRaw = lastPrompts.mutualRaw || { count: 0, names: [] };
+    // Separate fetchDebug from the display data
+    const { fetchDebug, ...mutualDisplay } = mutualRaw;
+    const mutualDebug = JSON.stringify(mutualDisplay, null, 2);
+    const fetchDebugStr = fetchDebug ? JSON.stringify(fetchDebug, null, 2) : 'N/A (not attempted)';
     qaPanel.innerHTML = `
       <div class="lmh-qa-section">
         <div class="lmh-qa-label-row">
@@ -340,6 +343,13 @@ function displayMessagesInPanel(_container, messages) {
           <button class="lmh-qa-copy-btn" data-copy="mutual">Copy</button>
         </div>
         <pre class="lmh-qa-pre lmh-qa-pre-scroll">${escapeHTML(mutualDebug)}</pre>
+      </div>
+      <div class="lmh-qa-section">
+        <div class="lmh-qa-label-row">
+          <span class="lmh-qa-label">Fetch Debug (full list scraping)</span>
+          <button class="lmh-qa-copy-btn" data-copy="fetchDebug">Copy</button>
+        </div>
+        <pre class="lmh-qa-pre lmh-qa-pre-scroll">${escapeHTML(fetchDebugStr)}</pre>
       </div>
       <div class="lmh-qa-section">
         <div class="lmh-qa-label-row">
@@ -358,7 +368,7 @@ function displayMessagesInPanel(_container, messages) {
     `;
 
     // Bind copy buttons
-    const copyData = { mutual: mutualDebug, system: lastPrompts.system, user: lastPrompts.user };
+    const copyData = { mutual: mutualDebug, fetchDebug: fetchDebugStr, system: lastPrompts.system, user: lastPrompts.user };
     qaPanel.querySelectorAll('.lmh-qa-copy-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         navigator.clipboard.writeText(copyData[btn.dataset.copy]);
@@ -542,39 +552,74 @@ function extractMutualConnections() {
 }
 
 // ── Full mutual-connections scraping (fetch in background) ─────────
+// Returns { names: string[] | null, debug: object }
 async function scrapeFullMutualConnections() {
+  const debug = { step: 'init', href: null, status: null, htmlLength: 0, codeBlocks: 0, strategy: null, namesFound: 0, error: null };
+
   // Find the <a> that contains "mutual connection" text and has an href
-  const link = [...document.querySelectorAll('a')].find(
+  const allLinks = [...document.querySelectorAll('a')];
+  const link = allLinks.find(
     (a) => a.href && /mutual\s+connection/i.test(a.textContent)
   );
-  if (!link?.href) return null;
+
+  if (!link?.href) {
+    debug.step = 'no-link-found';
+    debug.totalLinks = allLinks.length;
+    // List the first few links that mention "mutual" or "connection" for debugging
+    debug.candidateLinks = allLinks
+      .filter((a) => /mutual|connection/i.test(a.textContent))
+      .slice(0, 5)
+      .map((a) => ({ href: a.href, text: a.textContent.trim().slice(0, 80) }));
+    return { names: null, debug };
+  }
+
+  debug.href = link.href;
+  debug.linkText = link.textContent.trim().slice(0, 100);
+  debug.step = 'fetching';
 
   try {
-    // Fetch the mutual-connections page in the background (same origin, cookies included)
     const resp = await fetch(link.href, { credentials: 'include' });
-    if (!resp.ok) return null;
+    debug.status = resp.status;
+    debug.redirected = resp.redirected;
+    debug.finalUrl = resp.url;
+
+    if (!resp.ok) {
+      debug.step = 'fetch-failed';
+      return { names: null, debug };
+    }
+
     const html = await resp.text();
+    debug.htmlLength = html.length;
+    debug.step = 'parsing';
 
     const names = new Set();
-
-    // Strategy 1: Parse embedded JSON inside <code> blocks
-    // LinkedIn embeds search-result data as JSON in <code> elements.
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
-    doc.querySelectorAll('code').forEach((codeEl) => {
+    // Strategy 1: Parse embedded JSON inside <code> blocks
+    const codeEls = doc.querySelectorAll('code');
+    debug.codeBlocks = codeEls.length;
+
+    codeEls.forEach((codeEl) => {
       try {
         const json = JSON.parse(codeEl.textContent);
         collectNamesFromJSON(json, names);
       } catch (_) { /* not valid JSON, skip */ }
     });
 
+    if (names.size > 0) {
+      debug.strategy = 'code-json';
+    }
+
     // Strategy 2: aria-hidden spans in rendered HTML
     if (names.size === 0) {
-      doc.querySelectorAll('span[aria-hidden="true"]').forEach((span) => {
+      const ariaSpans = doc.querySelectorAll('span[aria-hidden="true"]');
+      debug.ariaHiddenSpans = ariaSpans.length;
+      ariaSpans.forEach((span) => {
         const text = span.textContent.trim();
         if (isLikelyPersonName(text)) names.add(text);
       });
+      if (names.size > 0) debug.strategy = 'aria-hidden';
     }
 
     // Strategy 3: regex on raw HTML for "title":{"text":"..."} patterns
@@ -585,11 +630,24 @@ async function scrapeFullMutualConnections() {
         const text = m[1].trim();
         if (isLikelyPersonName(text)) names.add(text);
       }
+      if (names.size > 0) debug.strategy = 'regex-title';
     }
 
-    return names.size > 0 ? [...names].slice(0, 30) : null;
-  } catch (_) {
-    return null;
+    // Strategy 4: look for any text that looks like a name in the HTML
+    if (names.size === 0) {
+      debug.strategy = 'none-matched';
+      // Save a snippet of the HTML for debugging
+      debug.htmlSnippet = html.slice(0, 2000);
+    }
+
+    debug.namesFound = names.size;
+    debug.step = 'done';
+
+    return { names: names.size > 0 ? [...names].slice(0, 30) : null, debug };
+  } catch (e) {
+    debug.step = 'error';
+    debug.error = e.message;
+    return { names: null, debug };
   }
 }
 

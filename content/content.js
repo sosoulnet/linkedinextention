@@ -541,86 +541,83 @@ function extractMutualConnections() {
   return result;
 }
 
-// ── Full mutual-connections scraping (opens the LinkedIn modal) ────
+// ── Full mutual-connections scraping (fetch in background) ─────────
 async function scrapeFullMutualConnections() {
-  // Find the <a> that contains "mutual connection" text
-  const link = [...document.querySelectorAll('a')].find((a) =>
-    /mutual\s+connection/i.test(a.textContent)
+  // Find the <a> that contains "mutual connection" text and has an href
+  const link = [...document.querySelectorAll('a')].find(
+    (a) => a.href && /mutual\s+connection/i.test(a.textContent)
   );
-  if (!link) return null;
+  if (!link?.href) return null;
 
-  // Click the link to open the LinkedIn modal
-  link.click();
+  try {
+    // Fetch the mutual-connections page in the background (same origin, cookies included)
+    const resp = await fetch(link.href, { credentials: 'include' });
+    if (!resp.ok) return null;
+    const html = await resp.text();
 
-  // Wait for modal / dialog to appear
-  const modal = await waitForElement('[role="dialog"], .artdeco-modal', 4000);
-  if (!modal) return null;
+    const names = new Set();
 
-  // Wait for the list content to populate
-  await sleep(1500);
+    // Strategy 1: Parse embedded JSON inside <code> blocks
+    // LinkedIn embeds search-result data as JSON in <code> elements.
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
 
-  // Scroll the modal list several times to load more names
-  const scrollContainer =
-    modal.querySelector('.artdeco-modal__content') ||
-    modal.querySelector('.scaffold-finite-scroll__content') ||
-    modal.querySelector('[class*="scroll"]') ||
-    modal;
-
-  for (let i = 0; i < 5; i++) {
-    scrollContainer.scrollTop = scrollContainer.scrollHeight;
-    await sleep(800);
-  }
-
-  // Scrape names using multiple selector strategies
-  const names = new Set();
-
-  // Strategy 1: entity result title text (search-style list)
-  modal
-    .querySelectorAll('.entity-result__title-text span[aria-hidden="true"]')
-    .forEach((el) => {
-      const n = el.textContent.trim();
-      if (n.length > 1) names.add(n);
+    doc.querySelectorAll('code').forEach((codeEl) => {
+      try {
+        const json = JSON.parse(codeEl.textContent);
+        collectNamesFromJSON(json, names);
+      } catch (_) { /* not valid JSON, skip */ }
     });
 
-  // Strategy 2: artdeco entity lockup titles
-  if (names.size === 0) {
-    modal
-      .querySelectorAll('.artdeco-entity-lockup__title span[aria-hidden="true"]')
-      .forEach((el) => {
-        const n = el.textContent.trim();
-        if (n.length > 1) names.add(n);
+    // Strategy 2: aria-hidden spans in rendered HTML
+    if (names.size === 0) {
+      doc.querySelectorAll('span[aria-hidden="true"]').forEach((span) => {
+        const text = span.textContent.trim();
+        if (isLikelyPersonName(text)) names.add(text);
       });
-  }
+    }
 
-  // Strategy 3: connection card names
-  if (names.size === 0) {
-    modal.querySelectorAll('.mn-connection-card__name').forEach((el) => {
-      const n = el.textContent.trim();
-      if (n.length > 1) names.add(n);
-    });
-  }
-
-  // Strategy 4: generic list items with aria-hidden spans
-  if (names.size === 0) {
-    modal.querySelectorAll('li span[aria-hidden="true"]').forEach((el) => {
-      const n = el.textContent.trim();
-      // Name heuristic: starts with uppercase, reasonable length
-      if (n.length > 1 && n.length < 60 && /^[A-Z\u0590-\u05FF]/.test(n)) {
-        names.add(n);
+    // Strategy 3: regex on raw HTML for "title":{"text":"..."} patterns
+    if (names.size === 0) {
+      const re = /"title"\s*:\s*\{\s*"text"\s*:\s*"([^"]{2,60})"/g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const text = m[1].trim();
+        if (isLikelyPersonName(text)) names.add(text);
       }
-    });
+    }
+
+    return names.size > 0 ? [...names].slice(0, 30) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Recursively walk a JSON tree looking for {title:{text:"Name"}} patterns. */
+function collectNamesFromJSON(obj, names, depth = 0) {
+  if (depth > 15 || names.size >= 50 || !obj || typeof obj !== 'object') return;
+
+  if (obj.title && typeof obj.title === 'object' && typeof obj.title.text === 'string') {
+    const text = obj.title.text.trim();
+    if (isLikelyPersonName(text)) names.add(text);
   }
 
-  // Close the modal
-  const closeBtn =
-    modal.querySelector('.artdeco-modal__dismiss') ||
-    modal.querySelector('button[aria-label="Dismiss"]') ||
-    modal.querySelector('.artdeco-button--circle');
-  if (closeBtn) closeBtn.click();
+  const values = Array.isArray(obj) ? obj : Object.values(obj);
+  for (const val of values) {
+    collectNamesFromJSON(val, names, depth + 1);
+  }
+}
 
-  if (names.size === 0) return null;
-
-  return [...names].slice(0, 30);
+/** Heuristic: does this string look like a person's name? */
+function isLikelyPersonName(text) {
+  return (
+    text.length > 2 &&
+    text.length < 60 &&
+    text.includes(' ') &&
+    /^[A-Z\u0590-\u05FF\u0400-\u04FF\u00C0-\u024F\u0600-\u06FF]/.test(text) &&
+    !/[<>{}[\]|]/.test(text) &&
+    !/(LinkedIn|Search|Home|Sign|Log|Page|Results|People|Connect|Premium)/i.test(text)
+  );
 }
 
 // ── Message generation (AI calls) ──────────────────────────────────

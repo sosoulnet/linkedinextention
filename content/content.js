@@ -949,85 +949,106 @@ async function scrapeFullMutualConnections() {
     return { names: null, debug };
   }
 
-  // 4. Call LinkedIn Voyager search API (same request the SPA makes)
-  const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
-    + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
-    + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
-    + `&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:`
-    + `(facetConnectionOf:List(${profileUrn}),facetNetwork:List(F),resultType:List(PEOPLE)))`
-    + `&count=49&start=0`;
-
-  debug.apiUrl = apiUrl;
+  // 4. Call LinkedIn Voyager search API with pagination to get ALL results
+  const PAGE_SIZE = 49;
+  const names = new Set();
+  let start = 0;
+  let totalFetched = 0;
+  debug.pages = 0;
 
   try {
-    const resp = await fetch(apiUrl, {
-      headers: {
-        'csrf-token': csrfToken,
-        'accept': 'application/vnd.linkedin.normalized+json+2.1',
-        'x-restli-protocol-version': '2.0.0',
-      },
-      credentials: 'include',
-    });
+    while (true) {
+      const apiUrl = `https://www.linkedin.com/voyager/api/search/dash/clusters`
+        + `?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175`
+        + `&origin=MEMBER_PROFILE_CANNED_SEARCH&q=all`
+        + `&query=(flagshipSearchIntent:SEARCH_SRP,queryParameters:`
+        + `(facetConnectionOf:List(${profileUrn}),facetNetwork:List(F),resultType:List(PEOPLE)))`
+        + `&count=${PAGE_SIZE}&start=${start}`;
 
-    debug.status = resp.status;
+      if (start === 0) debug.apiUrl = apiUrl;
 
-    if (!resp.ok) {
-      debug.step = 'api-error';
-      const errText = await resp.text();
-      debug.errorBody = errText.slice(0, 1000);
-      return { names: null, debug };
-    }
+      const resp = await fetch(apiUrl, {
+        headers: {
+          'csrf-token': csrfToken,
+          'accept': 'application/vnd.linkedin.normalized+json+2.1',
+          'x-restli-protocol-version': '2.0.0',
+        },
+        credentials: 'include',
+      });
 
-    const data = await resp.json();
-    debug.step = 'parsing';
-    debug.hasIncluded = Array.isArray(data.included);
-    debug.includedCount = data.included?.length || 0;
+      debug.status = resp.status;
 
-    const names = new Set();
-
-    // Strategy 1: included[] profiles with firstName + lastName
-    if (Array.isArray(data.included)) {
-      for (const item of data.included) {
-        if (item.firstName && item.lastName) {
-          names.add(`${item.firstName} ${item.lastName}`);
-        }
+      if (!resp.ok) {
+        debug.step = 'api-error';
+        const errText = await resp.text();
+        debug.errorBody = errText.slice(0, 1000);
+        // Return whatever we've collected so far
+        if (names.size > 0) break;
+        return { names: null, debug };
       }
+
+      const data = await resp.json();
+      debug.hasIncluded = Array.isArray(data.included);
+      debug.pages++;
+
+      const prevSize = names.size;
+
+      // Extract names from this page using all strategies
+      extractNamesFromResponse(data, names);
+
+      const newNames = names.size - prevSize;
+      totalFetched += data.included?.length || 0;
+
+      // Stop paginating if: no new names found, or fewer results than page size
+      if (newNames === 0 || (data.included && data.included.length < PAGE_SIZE)) break;
+
+      start += PAGE_SIZE;
+
+      // Safety cap: don't make more than 20 requests
+      if (debug.pages >= 20) break;
     }
 
-    if (names.size > 0) {
-      debug.strategy = 'included-firstLast';
-    }
-
-    // Strategy 2: Walk JSON tree for title.text patterns
-    if (names.size === 0) {
-      collectNamesFromJSON(data, names);
-      if (names.size > 0) debug.strategy = 'title-text';
-    }
-
-    // Strategy 3: Regex on stringified JSON for firstName/lastName
-    if (names.size === 0) {
-      const jsonStr = JSON.stringify(data);
-      const re = /"firstName":"([^"]+)","lastName":"([^"]+)"/g;
-      let m;
-      while ((m = re.exec(jsonStr)) !== null) {
-        names.add(`${m[1]} ${m[2]}`);
-      }
-      if (names.size > 0) debug.strategy = 'regex-firstLast';
-    }
-
-    if (names.size === 0) {
-      debug.strategy = 'none-matched';
-      debug.jsonSnippet = JSON.stringify(data).slice(0, 3000);
-    }
-
-    debug.namesFound = names.size;
     debug.step = 'done';
+    debug.namesFound = names.size;
+    debug.includedCount = totalFetched;
 
-    return { names: names.size > 0 ? [...names].slice(0, 40) : null, debug };
+    return { names: names.size > 0 ? [...names] : null, debug };
   } catch (e) {
     debug.step = 'error';
     debug.error = e.message;
+    // Return partial results if we got some before error
+    if (names.size > 0) {
+      debug.namesFound = names.size;
+      return { names: [...names], debug };
+    }
     return { names: null, debug };
+  }
+}
+
+/** Extract names from a single Voyager API response page into the names Set. */
+function extractNamesFromResponse(data, names) {
+  // Strategy 1: included[] profiles with firstName + lastName
+  if (Array.isArray(data.included)) {
+    for (const item of data.included) {
+      if (item.firstName && item.lastName) {
+        names.add(`${item.firstName} ${item.lastName}`);
+      }
+    }
+  }
+
+  if (names.size > 0) return;
+
+  // Strategy 2: Walk JSON tree for title.text patterns
+  collectNamesFromJSON(data, names);
+
+  if (names.size > 0) return;
+
+  // Strategy 3: Regex on stringified JSON for firstName/lastName
+  const jsonStr = JSON.stringify(data);
+  const re = /"firstName":"([^"]+)","lastName":"([^"]+)"/g;
+  let m;
+  while ((m = re.exec(jsonStr)) !== null) {
+    names.add(`${m[1]} ${m[2]}`);
   }
 }
 

@@ -458,97 +458,87 @@ function extractProfileData() {
 
 function extractMutualConnections() {
   const result = { count: 0, names: [] };
-  const mutualPattern = /(\d+)\s+(?:mutual|shared)\s+connection/i;
   const mutualTestPattern = /(?:mutual|shared)\s+connection/i;
 
-  // ── 1. Find the mutual-connections element ────────────────────────
-  // LinkedIn uses various DOM structures and element types, so we
-  // walk ALL elements and check their direct text content.
+  // ── 1. Find the element that contains "mutual connection" text ────
   let mutualElement = null;
 
-  const allElements = document.querySelectorAll('*');
-  for (const el of allElements) {
-    // Use innerText of the element itself (not children) to avoid
-    // matching on huge parent containers. Check the element's own
-    // childNodes for text nodes first, then fall back to textContent
-    // for small elements.
-    let ownText = '';
-    for (const node of el.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        ownText += node.textContent;
-      }
-    }
-    ownText = ownText.trim();
-
-    // If the element's own text nodes mention mutual connections, use it
-    if (mutualTestPattern.test(ownText)) {
-      const countMatch = ownText.match(mutualPattern);
-      if (countMatch) {
-        result.count = parseInt(countMatch[1], 10);
-      }
+  for (const el of document.querySelectorAll('*')) {
+    const text = el.textContent?.trim() || '';
+    // Only match small elements to avoid huge parent containers
+    if (text.length < 200 && mutualTestPattern.test(text)) {
       mutualElement = el;
       break;
     }
-
-    // Also check short textContent (leaf-ish elements only, < 200 chars)
-    if (!mutualElement) {
-      const text = el.textContent?.trim() || '';
-      if (text.length < 200 && mutualTestPattern.test(text)) {
-        const countMatch = text.match(mutualPattern);
-        if (countMatch) {
-          result.count = parseInt(countMatch[1], 10);
-        }
-        mutualElement = el;
-        break;
-      }
-    }
   }
 
-  // ── 2. Extract mutual connection names ────────────────────────────
-  if (mutualElement) {
-    // Walk up to find the container that holds the avatars/names
-    let container = mutualElement;
-    for (let i = 0; i < 5; i++) {
-      if (container.parentElement) container = container.parentElement;
+  if (!mutualElement) return result;
+
+  // ── 2. Extract count ──────────────────────────────────────────────
+  // LinkedIn often splits "32" and "mutual connections" into separate
+  // child elements, so the combined textContent has the count even if
+  // no single text node does. Walk up a couple levels to find it.
+  let countSource = mutualElement;
+  for (let i = 0; i < 3 && countSource; i++) {
+    const text = countSource.textContent?.trim() || '';
+    const countMatch = text.match(/(\d+)\s+(?:mutual|shared)\s+connection/i);
+    if (countMatch) {
+      result.count = parseInt(countMatch[1], 10);
+      break;
     }
-
-    // Strategy A: img alt attributes (avatar thumbnails)
-    container.querySelectorAll('img[alt]').forEach((img) => {
-      const alt = img.alt?.trim();
-      if (
-        alt &&
-        alt.length > 1 &&
-        alt.length < 80 &&
-        !alt.toLowerCase().includes('linkedin') &&
-        !alt.toLowerCase().includes('photo of') &&
-        !alt.toLowerCase().includes('company logo') &&
-        !mutualTestPattern.test(alt) &&
-        !/^\d+$/.test(alt)
-      ) {
-        result.names.push(alt);
-      }
-    });
-
-    // Strategy B: aria-label on links (full names)
-    container.querySelectorAll('a[aria-label]').forEach((a) => {
-      const label = a.getAttribute('aria-label')?.trim();
-      if (
-        label &&
-        label.length > 1 &&
-        label.length < 80 &&
-        !mutualTestPattern.test(label) &&
-        !/message/i.test(label) &&
-        !/follow/i.test(label)
-      ) {
-        result.names.push(label);
-      }
-    });
+    countSource = countSource.parentElement;
   }
+
+  // ── 3. Extract mutual connection names ────────────────────────────
+  // Walk up only 2 levels from the mutual element — just enough to
+  // reach the container with avatars, not the whole profile header.
+  let container = mutualElement;
+  for (let i = 0; i < 2; i++) {
+    if (container.parentElement) container = container.parentElement;
+  }
+
+  // Filter function: does this string look like a real person's name?
+  function isPersonName(str) {
+    if (!str || str.length < 3 || str.length > 60) return false;
+    // Must have at least 2 words (first + last name)
+    if (str.split(/\s+/).length < 2) return false;
+    // Reject obvious non-names
+    const lower = str.toLowerCase();
+    const rejectPatterns = [
+      'photo', 'image', 'logo', 'linkedin', 'graphic',
+      'alternative', 'description', 'view', 'like',
+      'follow', 'message', 'connect', 'pending', 'connection',
+      'mutual', 'shared', 'profile',
+    ];
+    return !rejectPatterns.some((p) => lower.includes(p));
+  }
+
+  // Strategy A: img alt attributes (avatar thumbnails near mutual section)
+  container.querySelectorAll('img[alt]').forEach((img) => {
+    const alt = img.alt?.trim();
+    if (isPersonName(alt)) {
+      result.names.push(alt);
+    }
+  });
+
+  // Strategy B: aria-label on links
+  container.querySelectorAll('a[aria-label]').forEach((a) => {
+    const label = a.getAttribute('aria-label')?.trim();
+    if (isPersonName(label)) {
+      result.names.push(label);
+    }
+  });
+
+  // Strategy C: title attributes on links
+  container.querySelectorAll('a[title]').forEach((a) => {
+    const title = a.getAttribute('title')?.trim();
+    if (isPersonName(title)) {
+      result.names.push(title);
+    }
+  });
 
   // Deduplicate, clean, and limit
-  result.names = [...new Set(result.names)]
-    .filter((n) => n && n.length > 1)
-    .slice(0, 5);
+  result.names = [...new Set(result.names)].slice(0, 5);
 
   return result;
 }
